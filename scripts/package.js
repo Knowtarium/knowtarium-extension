@@ -7,8 +7,17 @@
 // The zips are reproducible: entries sorted, fixed times and modes, so the same build gives the
 // same bytes. Run it through `pnpm package`, which builds first.
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { crc32, deflateRawSync } from "node:zlib";
 
@@ -68,6 +77,27 @@ for (const path of all) {
     fail(`${relative(dist, path)} calls eval`);
   }
 }
+
+// libsodium's standard build has seal-open functions; the extension never calls them, and holds
+// no key to call them with. Outside libsodium's own chunk, no code may name one.
+const libsodium = all.filter((path) => /[\\/]chunks[\\/]libsodium-[^\\/]+\.js$/.test(path));
+if (libsodium.length !== 1) fail("expected libsodium in exactly one chunk");
+for (const path of all.filter((p) => p.endsWith(".js") && !libsodium.includes(p))) {
+  const text = readFileSync(path, "utf8");
+  if (/_open|openClip|sumo/.test(text)) fail(`${relative(dist, path)} names a function that opens`);
+}
+
+// the SDK the bundle was built from: its version, and its commit when it is a git checkout
+const sdkDir = realpathSync(join(root, "node_modules", "knowtarium"));
+const sdkVersion = JSON.parse(readFileSync(join(sdkDir, "package.json"), "utf8")).version;
+function gitCommit(dir) {
+  try {
+    return execFileSync("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  } catch {
+    return null;
+  }
+}
+const sdkCommit = gitCommit(sdkDir);
 
 // reproducible zips: sorted entries, 1980-01-01 00:00, mode 644, deflated
 const DOS_TIME = 0;
@@ -137,7 +167,13 @@ const sums = names
 writeFileSync(join(out, "SHA256SUMS"), `${sums}\n`);
 
 const unpacked = all.reduce((total, path) => total + statSync(path).size, 0);
-const size = { version, packedBytes: packed.length, unpackedBytes: unpacked, files: all.length };
+const size = {
+  version,
+  packedBytes: packed.length,
+  unpackedBytes: unpacked,
+  files: all.length,
+  sdk: { version: sdkVersion, commit: sdkCommit },
+};
 writeFileSync(join(out, "size.json"), `${JSON.stringify(size, null, 2)}\n`);
 
 const kib = (bytes) => `${(bytes / 1024).toFixed(1)} KiB`;

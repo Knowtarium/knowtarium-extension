@@ -15,7 +15,7 @@ concurrency:
 # Until the release that pins the published knowtarium package, the extension links the SDK
 # from ../app-clipper (package.json: "knowtarium": "link:../app-clipper"). CI checks it out
 # there from Knowtarium/knowtarium-sdk at KNOWTARIUM_SDK_REF (a repository variable, default
-# the clipper branch) and builds it first.
+# the clipper branch) and builds it first. Releases require a commit SHA there (release.yml).
 env:
   SDK_REF: ${{ vars.KNOWTARIUM_SDK_REF || 'clipper' }}
 

@@ -55,6 +55,8 @@ export default defineConfig(({ mode }) => {
         output: {
           entryFileNames: "[name].js",
           chunkFileNames: "chunks/[name]-[hash].js",
+          // libsodium in a chunk of its own, so the build's checks can tell it from our code
+          advancedChunks: { groups: [{ name: "libsodium", test: /[\\/]libsodium/ }] },
           assetFileNames: "assets/[name]-[hash][extname]",
         },
       },

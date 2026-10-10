@@ -15,8 +15,11 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+# A release is built against one exact SDK commit: KNOWTARIUM_SDK_REF (a repository variable) must
+# be a full 40-character commit SHA of Knowtarium/knowtarium-sdk, never a branch or a tag that can
+# move. The commit is recorded in size.json and the release notes.
 env:
-  SDK_REF: ${{ vars.KNOWTARIUM_SDK_REF || 'clipper' }}
+  SDK_REF: ${{ vars.KNOWTARIUM_SDK_REF }}
 
 jobs:
   build:
@@ -30,6 +33,13 @@ jobs:
         with:
           path: extension
           persist-credentials: false
+
+      - name: Check the SDK ref is a commit SHA
+        run: |
+          if ! [[ "$SDK_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::set the KNOWTARIUM_SDK_REF variable to a full 40-character SDK commit SHA"
+            exit 1
+          fi
 
       - name: Check the tag's version
         id: version
@@ -73,6 +83,11 @@ jobs:
           pnpm check
           pnpm package
           (cd release && sha256sum -c SHA256SUMS)
+          built=$(jq -r .sdk.commit release/size.json)
+          if [ "$built" != "$SDK_REF" ]; then
+            echo "::error::size.json names SDK commit $built, not $SDK_REF"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -113,13 +128,22 @@ jobs:
           cd release-files
           sha256sum -c SHA256SUMS
           packed=$(jq -r .packedBytes size.json)
+          if ! [[ "$packed" =~ ^[0-9]+$ ]]; then
+            echo "::error::size.json's packedBytes isn't a number"
+            exit 1
+          fi
+          sdk=$(jq -r .sdk.commit size.json)
+          if ! [[ "$sdk" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::size.json's SDK commit isn't a commit SHA"
+            exit 1
+          fi
           kib=$(awk "BEGIN { printf \"%.1f\", $packed / 1024 }")
           notes="Knowtarium Web Clipper $VERSION.
 
           - \`knowtarium-extension-chrome-$VERSION.zip\` for the Chrome Web Store
           - \`knowtarium-extension-edge-$VERSION.zip\` for Edge Add-ons (the same files)
 
-          Packed size: $kib KiB ($packed bytes). Permissions: activeTab and storage only.
+          Packed size: $kib KiB ($packed bytes). Permissions: activeTab and storage only. Built with Knowtarium/knowtarium-sdk at commit $sdk.
 
           Check a download with \`sha256sum -c SHA256SUMS\` (\`shasum -a 256 -c SHA256SUMS\` on macOS) and its build provenance with \`gh attestation verify <zip> --repo $GITHUB_REPOSITORY\`."
           flags=()
