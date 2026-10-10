@@ -185,14 +185,14 @@ test.describe("full", () => {
     const code = (await pair.locator("#code").textContent()) ?? "";
     const web = await webOpened;
     await web.waitForURL(`${APP}/**`);
-    if (
-      await web
-        .getByLabel("Email")
-        .isVisible()
-        .catch(() => false)
-    ) {
+    // the guard sends a signed-out tab to the sign-in form after hydration: wait for either page
+    const warning = web.getByText(
+      "Only continue if you just clicked Connect in your Knowtarium extension",
+    );
+    await expect(web.getByLabel("Email").or(warning)).toBeVisible({ timeout: 60_000 });
+    if (await web.getByLabel("Email").isVisible()) {
       await web.getByLabel("Email").fill(email);
-      await web.getByLabel("Password").fill(password);
+      await web.getByLabel("Password", { exact: true }).fill(password);
       await web.getByRole("button", { name: /sign in/i }).click();
     }
     await expect(
@@ -227,6 +227,15 @@ test.describe("full", () => {
 
     // the web app files it as a note in the inbox
     await web.goto(`${APP}/`);
-    await expect(web.getByText("A page to keep")).toBeVisible({ timeout: 60_000 });
+    // keys never survive a full load: the web app asks for the password again
+    const unlock = web.getByRole("button", { name: "Unlock" });
+    await expect(unlock.or(web.getByText("A page to keep").first())).toBeVisible({
+      timeout: 60_000,
+    });
+    if (await unlock.isVisible()) {
+      await web.getByLabel("Password", { exact: true }).fill(password);
+      await unlock.click();
+    }
+    await expect(web.getByText("A page to keep").first()).toBeVisible({ timeout: 60_000 });
   });
 });
