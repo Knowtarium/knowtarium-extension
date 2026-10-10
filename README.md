@@ -11,21 +11,26 @@ and encrypted in the extension, and only your own devices can open them.
   other tabs, no background alarms.
 - **Write-only.** The extension never holds a workspace key. It signs each clip with its own
   Ed25519 key, which the workspace owner vouched for when pairing, and seals it to the workspace's
-  inbox key, which the owner signed. It can add clips to one workspace and can't read a single
-  note, not even the clips it sent. Knowtarium's server queues sealed clips it can't open; the
+  inbox key, which the owner signed. It can add clips to one workspace and holds no key that
+  reads a note, not even the clips it sent. Knowtarium's server queues sealed clips it can't open; the
   web app (or an agent, where the folder allows it) files each one as a note in `Inbox/` or
   `Inbox/<category>/`.
 - **Nothing about the page is read** beyond its link and title: no page text, selection or
   screenshot.
 
 The design, with every field and limit, is Knowtarium's web clipper design; the code here follows
-it and imports only `knowtarium/clip`, the SDK's light entry that can seal and verify but opens
-nothing except the pairing payload.
+it and imports only `knowtarium/clip`, the SDK's light entry that seals and verifies and decrypts
+nothing but the pairing payload. The standard libsodium build it bundles does contain the
+seal-open functions (`crypto_box_seal_open` and the like): the extension never calls them, and
+holds no key to call them with. `pnpm package` checks that no code outside libsodium's own chunk
+names one.
 
 ## Using it
 
 1. Click the Knowtarium button and **Connect to Knowtarium**. A tab opens with a code, and
-   Knowtarium opens next to it.
+   Knowtarium opens next to it. The pairing tab starts only from that button (a one-time nonce
+   in session storage): a tab the browser restores, or a reload, shows the state and starts
+   nothing.
 2. In Knowtarium, check that it shows the same code, tick "This code matches my extension",
    pick the workspace and allow.
 3. To save a page: click the button (or press **Alt+Shift+S**, changeable in the browser's
@@ -33,7 +38,12 @@ nothing except the pairing payload.
 
 Without a network, a clip waits in the extension (at most 100) and is sent the next time the
 popup opens or the browser starts. **Disconnect** in the popup revokes the extension and clears
-everything it stored.
+everything it stored, waiting clips included.
+
+When Knowtarium ends the connection (the extension was removed in the workspace's settings), the
+popup says "Disconnected from Knowtarium" and offers Connect again; waiting clips and categories
+stay. Connecting again to the same workspace of the same account sends them; connecting to
+another workspace discards them, and the popup warns before that.
 
 ## Development
 
@@ -98,14 +108,17 @@ CSP, no inline script or eval) and writes to `release/`:
 
 - `knowtarium-extension-chrome-<version>.zip` for the Chrome Web Store
 - `knowtarium-extension-edge-<version>.zip` for Edge Add-ons (the same files)
-- `SHA256SUMS`, and `size.json` with the packed size
+- `SHA256SUMS`, and `size.json` with the packed size and the SDK version and commit it was
+  built with
 
-The zips are reproducible: the same build gives the same bytes. Version 0.1.0 packs to 179.6 KiB
-(488 KiB unpacked, most of it libsodium).
+The zips are reproducible: the same build gives the same bytes. Version 0.1.0 packs to 180.8 KiB
+(493 KiB unpacked, most of it libsodium, which sits in a chunk of its own).
 
-To release, set the version in `package.json`, commit, and push a tag `v<version>`. The Release
+To release, set the repository variable `KNOWTARIUM_SDK_REF` to the full 40-character commit SHA
+of the SDK to build with (the Release workflow refuses a branch or a tag, which could move; CI
+may follow a branch), set the version in `package.json`, commit, and push a tag `v<version>`. The Release
 workflow builds that tag and attaches the zips, `SHA256SUMS` and `size.json` to its GitHub
-Release, with signed build provenance and the packed size in the notes:
+Release, with signed build provenance, the packed size and the SDK commit in the notes:
 
 ```sh
 sha256sum -c SHA256SUMS
