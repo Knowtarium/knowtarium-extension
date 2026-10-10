@@ -34,12 +34,25 @@ export const QUEUE_LIMIT = 100;
 /** How often the popup reads the inbox key when it opens. */
 export const INBOX_KEY_CHECK_MS = 24 * 60 * 60 * 1000;
 
+/** The longest a Retry-After is followed: a day. */
+export const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
+/** The wait after a 429 that names none. */
+export const DEFAULT_RETRY_AFTER_MS = 60 * 1000;
+
 /** Why a clip waits in the queue. */
 export type WaitReason =
-  "offline" | "server_error" | "not_updated" | "rate_limited" | "inbox_full" | "unverified_key";
+  | "offline"
+  | "server_error"
+  | "not_updated"
+  | "rate_limited"
+  | "inbox_full"
+  | "quota_exceeded"
+  | "unverified_key"
+  /** The API needs this extension connected again (403, or 409 inbox_not_set). */
+  | "reconnect";
 
-/** Why a clip was not kept (at save) or was dropped from the queue. */
-export type FailReason = "too_long" | "quota_exceeded" | "refused";
+/** Why a clip was not kept (at save) or was dropped from the queue: it can never be taken. */
+export type FailReason = "too_long" | "refused";
 
 /** The fields of the popup's form. */
 export interface ClipForm {
@@ -58,6 +71,8 @@ export type SaveResult =
       readonly category: string;
       /** Clips in the queue now, this one included. */
       readonly waiting: number;
+      /** After a 429: when sending is tried again (ms since the epoch). */
+      readonly retryAt?: number;
     }
   | { readonly kind: "failed"; readonly reason: FailReason }
   | {
@@ -75,7 +90,9 @@ export interface FlushResult {
   /** Clips still in the queue. */
   readonly waiting: number;
   /** Why sending stopped before the queue was empty, or null. */
-  readonly stoppedBy: WaitReason | "quota_exceeded" | "disconnected" | null;
+  readonly stoppedBy: WaitReason | "disconnected" | null;
+  /** After a 429: when sending is tried again (ms since the epoch). */
+  readonly retryAt?: number;
 }
 
 export type InboxKeyRefresh =
@@ -84,9 +101,8 @@ export type InboxKeyRefresh =
 /** What one post came to. */
 type Answer =
   | { readonly kind: "sent"; readonly duplicate: boolean }
-  | { readonly kind: "wait"; readonly reason: WaitReason }
-  | { readonly kind: "full" }
-  | { readonly kind: "refused"; readonly reason: "too_long" | "refused" }
+  | { readonly kind: "wait"; readonly reason: WaitReason; readonly retryAfterSeconds?: number }
+  | { readonly kind: "refused"; readonly reason: FailReason }
   | { readonly kind: "disconnected" };
 
 /** The popup's answer to each API status (the design's table, "The extension"). */
@@ -101,15 +117,29 @@ export function classifyPost(result: ApiResult<unknown>): Answer {
   if (status === 401) return { kind: "disconnected" };
   if (status === 404) return { kind: "wait", reason: "not_updated" };
   if (status === 429) {
-    return { kind: "wait", reason: code === "inbox_full" ? "inbox_full" : "rate_limited" };
+    if (code === "inbox_full") return { kind: "wait", reason: "inbox_full" };
+    return {
+      kind: "wait",
+      reason: "rate_limited",
+      ...(result.retryAfterSeconds === null ? {} : { retryAfterSeconds: result.retryAfterSeconds }),
+    };
   }
-  if (status === 402) return { kind: "full" };
+  if (status === 402) return { kind: "wait", reason: "quota_exceeded" };
+  // only a clip the API can never take is dropped: one too long, or a malformed request
   if (status === 413) return { kind: "refused", reason: "too_long" };
+  if (status === 400 && code === "invalid_request") return { kind: "refused", reason: "refused" };
+  // a server that speaks another protocol version: one not updated yet, as a 404 is
+  if (status === 400 && code === "unsupported_protocol") {
+    return { kind: "wait", reason: "not_updated" };
+  }
   // the clip ID is the extension's own and random, so the API holds it only from an earlier post
   // of this clip whose answer was lost (before a seal again): it has the clip
   if (status === 409 && code === "already_exists") return { kind: "sent", duplicate: true };
   if (status === 409 && code === "stale_inbox_key") return { kind: "wait", reason: "server_error" };
-  return { kind: "refused", reason: "refused" };
+  if (status === 403 || (status === 409 && code === "inbox_not_set")) {
+    return { kind: "wait", reason: "reconnect" };
+  }
+  return { kind: "wait", reason: "server_error" };
 }
 
 export interface ClipperDeps {
@@ -200,6 +230,31 @@ export function createClipper(deps: ClipperDeps): Clipper {
     await store.set({ queue });
   }
 
+  /** When sending may be tried again after a 429, or null when it may now. */
+  async function retryBlock(): Promise<number | null> {
+    const { retryAt } = await store.get(["retryAt"]);
+    return typeof retryAt === "number" && retryAt > now() ? retryAt : null;
+  }
+
+  async function clearRetry(): Promise<void> {
+    await store.remove(["retryAt"]);
+  }
+
+  /** After a 429 rate limit: no sending until its Retry-After (at most a day), stored. */
+  async function noteWait(answer: {
+    readonly reason: WaitReason;
+    readonly retryAfterSeconds?: number;
+  }): Promise<number | null> {
+    if (answer.reason !== "rate_limited") return null;
+    const ms =
+      answer.retryAfterSeconds === undefined
+        ? DEFAULT_RETRY_AFTER_MS
+        : Math.min(MAX_RETRY_AFTER_MS, Math.max(0, answer.retryAfterSeconds * 1000));
+    const retryAt = now() + ms;
+    await store.set({ retryAt });
+    return retryAt;
+  }
+
   async function replaceItem(item: QueuedClip): Promise<void> {
     const queue = await readQueue();
     await writeQueue(queue.map((entry) => (entry.clipId === item.clipId ? item : entry)));
@@ -282,21 +337,32 @@ export function createClipper(deps: ClipperDeps): Clipper {
     if (queue.length >= QUEUE_LIMIT) return { kind: "queue_full" };
     // written before it is sent, so a popup closed mid-request loses nothing
     await writeQueue([...queue, item]);
+    const blockedUntil = await retryBlock();
+    if (blockedUntil !== null) {
+      return {
+        kind: "queued",
+        reason: "rate_limited",
+        category,
+        waiting: queue.length + 1,
+        retryAt: blockedUntil,
+      };
+    }
     const { answer } = await send(connection, item);
     switch (answer.kind) {
       case "sent":
         await removeItem(item.clipId);
+        await clearRetry();
         return { kind: "saved", category, duplicate: answer.duplicate };
-      case "wait":
+      case "wait": {
+        const retryAt = await noteWait(answer);
         return {
           kind: "queued",
           reason: answer.reason,
           category,
           waiting: (await readQueue()).length,
+          ...(retryAt === null ? {} : { retryAt }),
         };
-      case "full":
-        await removeItem(item.clipId);
-        return { kind: "failed", reason: "quota_exceeded" };
+      }
       case "refused":
         await removeItem(item.clipId);
         return { kind: "failed", reason: answer.reason };
@@ -320,6 +386,16 @@ export function createClipper(deps: ClipperDeps): Clipper {
         if (connection === undefined || queue.length === 0) {
           return { sent: 0, dropped: 0, waiting: queue.length, stoppedBy: null };
         }
+        const blockedUntil = await retryBlock();
+        if (blockedUntil !== null) {
+          return {
+            sent: 0,
+            dropped: 0,
+            waiting: queue.length,
+            stoppedBy: "rate_limited",
+            retryAt: blockedUntil,
+          };
+        }
         let sent = 0;
         let dropped = 0;
         for (const item of queue) {
@@ -327,8 +403,12 @@ export function createClipper(deps: ClipperDeps): Clipper {
           connection = outcome.connection;
           const { answer } = outcome;
           if (answer.kind === "sent" || answer.kind === "refused") {
-            if (answer.kind === "sent") sent += 1;
-            else dropped += 1;
+            if (answer.kind === "sent") {
+              sent += 1;
+              await clearRetry();
+            } else {
+              dropped += 1;
+            }
             await removeItem(item.clipId);
             continue;
           }
@@ -342,11 +422,13 @@ export function createClipper(deps: ClipperDeps): Clipper {
             };
           }
           queue = await readQueue();
+          const retryAt = await noteWait(answer);
           return {
             sent,
             dropped,
             waiting: queue.length,
-            stoppedBy: answer.kind === "full" ? "quota_exceeded" : answer.reason,
+            stoppedBy: answer.reason,
+            ...(retryAt === null ? {} : { retryAt }),
           };
         }
         return { sent, dropped, waiting: (await readQueue()).length, stoppedBy: null };

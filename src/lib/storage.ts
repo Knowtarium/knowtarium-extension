@@ -58,6 +58,8 @@ export interface StoredState {
   readonly categories?: readonly string[];
   readonly queue?: readonly QueuedClip[];
   readonly notice?: Notice;
+  /** After a 429: no clip is sent before this time (ms since the epoch). */
+  readonly retryAt?: number;
 }
 
 export type StateKey = keyof StoredState;
@@ -75,6 +77,7 @@ export const ALL_KEYS: readonly StateKey[] = [
   "categories",
   "queue",
   "notice",
+  "retryAt",
 ];
 
 /** chrome.storage.local. */

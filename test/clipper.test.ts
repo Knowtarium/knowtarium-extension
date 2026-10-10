@@ -107,6 +107,8 @@ describe("saving a clip", () => {
     const first = await state.clipper.save(form());
     if (first.kind === "queued") reasons.push(first.reason);
     for (let i = 0; i < 3; i++) {
+      // past any Retry-After
+      state.clock += 31_000;
       const flushed = await state.clipper.flush();
       reasons.push(String(flushed.stoppedBy));
       expect(flushed.waiting).toBe(1);
@@ -114,6 +116,7 @@ describe("saving a clip", () => {
     expect(reasons).toEqual(["server_error", "not_updated", "rate_limited", "inbox_full"]);
     const blobs = new Set(posts(state).map((r) => (r.body as { blob: string }).blob));
     expect(blobs.size).toBe(1);
+    state.clock += 31_000;
     expect(await state.clipper.flush()).toMatchObject({ sent: 1, waiting: 0 });
     expect(new Set(posts(state).map((r) => (r.body as { blob: string }).blob)).size).toBe(1);
   });
@@ -238,18 +241,79 @@ describe("saving a clip", () => {
     expect(await state.clipper.save(form())).toMatchObject({ kind: "saved", duplicate: true });
   });
 
-  it("keeps nothing on 402, 413 or another refusal", async () => {
+  it("drops a clip only on 413 or 400 invalid_request", async () => {
     for (const [answer, reason] of [
-      [apiError(402, "quota_exceeded"), "quota_exceeded"],
       [apiError(413, "payload_too_large"), "too_long"],
       [apiError(400, "invalid_request"), "refused"],
-      [apiError(403, "forbidden"), "refused"],
     ] as const) {
       const state = connected();
       state.api.override = (r) => (r.path === "/extensions/current/clips" ? answer : undefined);
       expect(await state.clipper.save(form())).toEqual({ kind: "failed", reason });
       expect(state.store.snapshot().queue).toEqual([]);
     }
+  });
+
+  it("keeps the clip on 402, 403, 409 inbox_not_set and 400 unsupported_protocol", async () => {
+    for (const [status, code, reason] of [
+      [402, "quota_exceeded", "quota_exceeded"],
+      [403, "forbidden", "reconnect"],
+      [409, "inbox_not_set", "reconnect"],
+      [400, "unsupported_protocol", "not_updated"],
+    ] as const) {
+      const state = connected();
+      state.api.override = (r) =>
+        r.path === "/extensions/current/clips" ? apiError(status, code) : undefined;
+      expect(await state.clipper.save(form())).toMatchObject({ kind: "queued", reason });
+      expect(state.store.snapshot().queue).toHaveLength(1);
+      // and keeps it while sending the queue too
+      expect(await state.clipper.flush()).toMatchObject({ stoppedBy: reason, waiting: 1 });
+      state.api.override = null;
+      expect(await state.clipper.flush()).toMatchObject({ sent: 1, waiting: 0 });
+    }
+  });
+
+  it("follows Retry-After: nothing is sent before it, then the queue goes out", async () => {
+    const state = connected();
+    let limited = true;
+    state.api.override = (r) =>
+      r.path === "/extensions/current/clips" && limited
+        ? apiError(429, "rate_limited", { retryAfterSeconds: 120 }, { "Retry-After": "120" })
+        : undefined;
+    const first = await state.clipper.save(form());
+    expect(first).toMatchObject({
+      kind: "queued",
+      reason: "rate_limited",
+      retryAt: state.clock + 120_000,
+    });
+    limited = false;
+    // a second save and the popup's flush wait too, without a request
+    const second = await state.clipper.save(form());
+    expect(second).toMatchObject({ kind: "queued", retryAt: state.clock + 120_000, waiting: 2 });
+    expect(await state.clipper.flush()).toMatchObject({
+      sent: 0,
+      stoppedBy: "rate_limited",
+      retryAt: state.clock + 120_000,
+    });
+    expect(posts(state)).toHaveLength(1);
+    state.clock += 120_000;
+    expect(await state.clipper.flush()).toMatchObject({ sent: 2, waiting: 0, stoppedBy: null });
+    expect(state.store.snapshot().retryAt).toBeUndefined();
+  });
+
+  it("waits a minute after a 429 without Retry-After, and at most a day", async () => {
+    const plain = connected();
+    plain.api.override = (r) =>
+      r.path === "/extensions/current/clips" ? apiError(429, "rate_limited") : undefined;
+    expect(await plain.clipper.save(form())).toMatchObject({ retryAt: plain.clock + 60_000 });
+
+    const long = connected();
+    long.api.override = (r) =>
+      r.path === "/extensions/current/clips"
+        ? apiError(429, "rate_limited", {}, { "Retry-After": "999999" })
+        : undefined;
+    expect(await long.clipper.save(form())).toMatchObject({
+      retryAt: long.clock + 24 * 60 * 60 * 1000,
+    });
   });
 
   it("on 401 drops the connection only, keeping the clip, the queue and the categories", async () => {

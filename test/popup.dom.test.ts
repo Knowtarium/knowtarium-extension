@@ -1,7 +1,7 @@
 import { fromBase64Url, ready } from "knowtarium/clip";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { TEXT } from "../src/lib/messages";
+import { TEXT, waitText } from "../src/lib/messages";
 import type { CurrentPage } from "../src/lib/tab";
 import { mountPopup, NEW_CATEGORY, type PopupDeps } from "../src/popup/view";
 import popupHtml from "../src/popup.html?raw";
@@ -167,7 +167,7 @@ describe("the popup", () => {
     await handle.loaded;
     state.api.offline = true;
     await submit();
-    expect($("done-text").textContent).toBe(TEXT.offline);
+    expect($("done-text").textContent).toBe(waitText("offline"));
     expect($("waiting").textContent).toBe("1 clip waiting to be sent");
   });
 
@@ -194,7 +194,7 @@ describe("the popup", () => {
     expect(visible("clip-form")).toBe(true);
   });
 
-  it("shows the API's refusals and keeps the form", async () => {
+  it("keeps the clip when the storage is full, and says so", async () => {
     const state = connected();
     const { handle } = mount(state);
     await handle.loaded;
@@ -203,8 +203,40 @@ describe("the popup", () => {
         ? new Response('{"error":{"code":"quota_exceeded","message":"x"}}', { status: 402 })
         : undefined;
     await submit();
-    expect($("alert").textContent).toBe("Your Knowtarium storage is full");
+    expect($("done-text").textContent).toBe(
+      "Your Knowtarium storage is full. This clip waits here.",
+    );
+    expect($("waiting").textContent).toBe("1 clip waiting to be sent");
+  });
+
+  it("shows the API's refusals and keeps the form", async () => {
+    const state = connected();
+    const { handle } = mount(state);
+    await handle.loaded;
+    state.api.override = (r) =>
+      r.path === "/extensions/current/clips"
+        ? new Response('{"error":{"code":"invalid_request","message":"x"}}', { status: 400 })
+        : undefined;
+    await submit();
+    expect($("alert").textContent).toBe("Knowtarium refused this clip");
     expect(visible("clip-form")).toBe(true);
+  });
+
+  it("says when a rate-limited clip will be sent", async () => {
+    const state = connected();
+    const { handle } = mount(state);
+    await handle.loaded;
+    state.api.override = (r) =>
+      r.path === "/extensions/current/clips"
+        ? new Response('{"error":{"code":"rate_limited","message":"x"}}', {
+            status: 429,
+            headers: { "Retry-After": "300" },
+          })
+        : undefined;
+    await submit();
+    expect($("done-text").textContent).toBe(
+      waitText("rate_limited", { retryAt: state.clock + 300_000 }),
+    );
   });
 
   it("offers Connect when not connected, and Connect again after the server ended it", async () => {
@@ -327,7 +359,7 @@ describe("the popup", () => {
           )
         : undefined;
     await submit();
-    expect($("done-text").textContent).toBe(TEXT.unverifiedKey);
+    expect($("done-text").textContent).toBe(waitText("unverified_key"));
     expect(visible("reconnect-row")).toBe(true);
   });
 

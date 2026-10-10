@@ -67,6 +67,20 @@ describe("the API client", () => {
     });
   });
 
+  it("reads Retry-After as an HTTP date too", async () => {
+    const at = new Date(Date.now() + 90_000).toUTCString();
+    const { fetchImpl } = recording(
+      () =>
+        new Response('{"error":{"code":"rate_limited","message":"x"}}', {
+          status: 429,
+          headers: { "Retry-After": at },
+        }),
+    );
+    const result = await createApi("https://api.test", fetchImpl).getInboxKey("kte_x");
+    expect(result.kind === "error" && result.retryAfterSeconds).toBeGreaterThan(80);
+    expect(result.kind === "error" && result.retryAfterSeconds).toBeLessThanOrEqual(90);
+  });
+
   it("copes with an error that isn't JSON", async () => {
     const { fetchImpl } = recording(
       () => new Response("<html>bad gateway</html>", { status: 502 }),

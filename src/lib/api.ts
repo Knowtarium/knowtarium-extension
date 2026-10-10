@@ -47,9 +47,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function retryAfter(response: Response, error: Record<string, unknown> | null): number | null {
-  const header = response.headers.get("Retry-After");
-  const fromHeader = header === null ? Number.NaN : Number(header);
-  if (Number.isFinite(fromHeader) && fromHeader >= 0) return fromHeader;
+  const header = response.headers.get("Retry-After")?.trim() ?? null;
+  if (header !== null && /^\d+$/.test(header)) return Number(header);
+  // or an HTTP date
+  const date = header === null ? Number.NaN : Date.parse(header);
+  if (Number.isFinite(date)) return Math.max(0, Math.ceil((date - Date.now()) / 1000));
   const fromBody = error?.["retryAfterSeconds"];
   return typeof fromBody === "number" && Number.isFinite(fromBody) && fromBody >= 0
     ? fromBody

@@ -37,7 +37,9 @@ names one.
    extension shortcuts), add a note or pick a category if you like, then **Save**.
 
 Without a network, a clip waits in the extension (at most 100) and is sent the next time the
-popup opens or the browser starts. **Disconnect** in the popup revokes the extension and clears
+popup opens or the browser starts. A clip is dropped only when Knowtarium can never take it (too
+long, or a malformed request); after a rate limit nothing is sent before the time the server
+named (at most a day). **Disconnect** in the popup revokes the extension and clears
 everything it stored, waiting clips included.
 
 When Knowtarium ends the connection (the extension was removed in the workspace's settings), the

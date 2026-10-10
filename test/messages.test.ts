@@ -1,29 +1,37 @@
 import { describe, expect, it } from "vitest";
 
 import type { ApiResult } from "../src/lib/api";
-import { classifyPost } from "../src/lib/clipper";
+import { classifyPost, type WaitReason } from "../src/lib/clipper";
 import {
   discardedText,
   discardWarning,
   flushMessage,
+  formatTime,
   keptText,
   pairingFailureText,
   saveMessage,
   TEXT,
   waitingText,
+  waitText,
 } from "../src/lib/messages";
 import type { PairingFailure } from "../src/lib/pairing";
 
-const error = (status: number, code: string | null = null): ApiResult<unknown> => ({
+const error = (
+  status: number,
+  code: string | null = null,
+  retryAfterSeconds: number | null = null,
+): ApiResult<unknown> => ({
   kind: "error",
   status,
   code,
   error: code === null ? null : { code },
-  retryAfterSeconds: null,
+  retryAfterSeconds,
 });
 
+const wait = (reason: WaitReason) => ({ kind: "wait", reason });
+
 describe("each answer to a posted clip", () => {
-  it("maps to what the popup does", () => {
+  it("is sent, or waits, or is dropped only when the API can never take it", () => {
     expect(classifyPost({ kind: "ok", status: 201, body: { status: "queued" } })).toEqual({
       kind: "sent",
       duplicate: false,
@@ -32,42 +40,41 @@ describe("each answer to a posted clip", () => {
       kind: "sent",
       duplicate: true,
     });
-    expect(classifyPost({ kind: "network" })).toEqual({ kind: "wait", reason: "offline" });
+    expect(classifyPost({ kind: "network" })).toEqual(wait("offline"));
     for (const status of [500, 502, 503, 504]) {
-      expect(classifyPost(error(status, "unavailable"))).toEqual({
-        kind: "wait",
-        reason: "server_error",
-      });
+      expect(classifyPost(error(status, "unavailable"))).toEqual(wait("server_error"));
     }
-    expect(classifyPost(error(404, "not_found"))).toEqual({ kind: "wait", reason: "not_updated" });
-    expect(classifyPost(error(404))).toEqual({ kind: "wait", reason: "not_updated" });
-    expect(classifyPost(error(429, "rate_limited"))).toEqual({
-      kind: "wait",
-      reason: "rate_limited",
+    expect(classifyPost(error(404, "not_found"))).toEqual(wait("not_updated"));
+    expect(classifyPost(error(404))).toEqual(wait("not_updated"));
+    expect(classifyPost(error(400, "unsupported_protocol"))).toEqual(wait("not_updated"));
+    expect(classifyPost(error(429, "rate_limited"))).toEqual(wait("rate_limited"));
+    expect(classifyPost(error(429, "rate_limited", 30))).toEqual({
+      ...wait("rate_limited"),
+      retryAfterSeconds: 30,
     });
-    expect(classifyPost(error(429, "inbox_full"))).toEqual({ kind: "wait", reason: "inbox_full" });
+    expect(classifyPost(error(429, "inbox_full"))).toEqual(wait("inbox_full"));
+    expect(classifyPost(error(402, "quota_exceeded"))).toEqual(wait("quota_exceeded"));
+    expect(classifyPost(error(403, "forbidden"))).toEqual(wait("reconnect"));
+    expect(classifyPost(error(409, "inbox_not_set"))).toEqual(wait("reconnect"));
+    expect(classifyPost(error(409, "stale_inbox_key"))).toEqual(wait("server_error"));
+    expect(classifyPost(error(418, "teapot"))).toEqual(wait("server_error"));
     expect(classifyPost(error(401, "token_revoked"))).toEqual({ kind: "disconnected" });
     expect(classifyPost(error(401, "unauthenticated"))).toEqual({ kind: "disconnected" });
-    expect(classifyPost(error(402, "quota_exceeded"))).toEqual({ kind: "full" });
+    expect(classifyPost(error(409, "already_exists"))).toEqual({ kind: "sent", duplicate: true });
+    // only these are dropped
     expect(classifyPost(error(413, "payload_too_large"))).toEqual({
       kind: "refused",
       reason: "too_long",
-    });
-    expect(classifyPost(error(409, "already_exists"))).toEqual({ kind: "sent", duplicate: true });
-    expect(classifyPost(error(409, "stale_inbox_key"))).toEqual({
-      kind: "wait",
-      reason: "server_error",
     });
     expect(classifyPost(error(400, "invalid_request"))).toEqual({
       kind: "refused",
       reason: "refused",
     });
-    expect(classifyPost(error(403, "forbidden"))).toEqual({ kind: "refused", reason: "refused" });
   });
 });
 
 describe("the popup's texts", () => {
-  it("are the design's, word for word", () => {
+  it("follow the design's table, each wait saying the clip waits here", () => {
     expect(saveMessage({ kind: "saved", category: "", duplicate: false }).text).toBe(
       "Saved to Inbox",
     );
@@ -79,31 +86,50 @@ describe("the popup's texts", () => {
       text: "Disconnected from Knowtarium",
       reconnect: true,
     });
-    expect(
-      saveMessage({ kind: "queued", reason: "not_updated", category: "", waiting: 1 }).text,
-    ).toBe("Knowtarium's server isn't updated yet. This clip waits here.");
     expect(saveMessage({ kind: "failed", reason: "too_long" }).text).toBe("This clip is too long");
-    expect(
-      saveMessage({ kind: "queued", reason: "rate_limited", category: "", waiting: 1 }).text,
-    ).toBe("Too many saves, it will be sent later");
-    expect(saveMessage({ kind: "queued", reason: "inbox_full", category: "", waiting: 1 })).toEqual(
-      {
-        tone: "error",
-        text: "Your inbox has 1,000 clips waiting. Open Knowtarium to file them. This clip waits here.",
-      },
-    );
-    expect(saveMessage({ kind: "failed", reason: "quota_exceeded" }).text).toBe(
-      "Your Knowtarium storage is full",
-    );
     expect(saveMessage({ kind: "invalid", field: "url", code: "bad_url" }).text).toBe(
       "This page can't be saved",
     );
+    const texts: Record<WaitReason, string> = {
+      offline: "Knowtarium can't be reached right now. This clip waits here.",
+      server_error: "Knowtarium had a problem. This clip waits here.",
+      not_updated: "Knowtarium's server isn't updated yet. This clip waits here.",
+      rate_limited: "Too many saves. This clip waits here.",
+      inbox_full:
+        "Your inbox has 1,000 clips waiting. Open Knowtarium to file them. This clip waits here.",
+      quota_exceeded: "Your Knowtarium storage is full. This clip waits here.",
+      unverified_key:
+        "Knowtarium sent an inbox key this extension couldn't verify. This clip waits here.",
+      reconnect: "Knowtarium needs this extension connected again. This clip waits here.",
+    };
+    for (const [reason, text] of Object.entries(texts) as [WaitReason, string][]) {
+      expect(saveMessage({ kind: "queued", reason, category: "", waiting: 1 }).text).toBe(text);
+    }
   });
 
-  it("offer Connect again with an inbox key that doesn't verify", () => {
+  it("offer Connect again where only connecting again helps", () => {
+    for (const reason of ["unverified_key", "reconnect"] as const) {
+      expect(saveMessage({ kind: "queued", reason, category: "", waiting: 1 })).toMatchObject({
+        tone: "error",
+        reconnect: true,
+      });
+    }
+    for (const reason of ["offline", "rate_limited", "quota_exceeded", "inbox_full"] as const) {
+      expect(saveMessage({ kind: "queued", reason, category: "", waiting: 1 })).not.toHaveProperty(
+        "reconnect",
+      );
+    }
+  });
+
+  it("say when a rate-limited clip is sent", () => {
+    const at = Date.parse("2026-10-10T14:05:00.000Z");
     expect(
-      saveMessage({ kind: "queued", reason: "unverified_key", category: "", waiting: 1 }),
-    ).toEqual({ tone: "error", text: TEXT.unverifiedKey, reconnect: true });
+      saveMessage({ kind: "queued", reason: "rate_limited", category: "", waiting: 1, retryAt: at })
+        .text,
+    ).toBe(`Too many saves. This clip waits here and is sent after ${formatTime(at)}.`);
+    expect(waitText("rate_limited", { retryAt: at, count: 3 })).toBe(
+      `Too many saves. These clips wait here and are sent after ${formatTime(at)}.`,
+    );
   });
 
   it("warn before connecting elsewhere and say what happened to waiting clips", () => {
@@ -128,16 +154,6 @@ describe("the popup's texts", () => {
   });
 
   it("cover every other outcome", () => {
-    expect(saveMessage({ kind: "queued", reason: "offline", category: "", waiting: 2 })).toEqual({
-      tone: "info",
-      text: TEXT.offline,
-    });
-    expect(
-      saveMessage({ kind: "queued", reason: "server_error", category: "", waiting: 1 }).text,
-    ).toBe(TEXT.serverError);
-    expect(
-      saveMessage({ kind: "queued", reason: "unverified_key", category: "", waiting: 1 }).text,
-    ).toBe(TEXT.unverifiedKey);
     expect(saveMessage({ kind: "failed", reason: "refused" }).text).toBe(TEXT.refused);
     expect(saveMessage({ kind: "invalid", field: "title", code: "too_long" }).text).toBe(
       TEXT.titleTooLong,
@@ -156,16 +172,20 @@ describe("the popup's texts", () => {
     const base = { sent: 0, dropped: 0, waiting: 1 };
     expect(flushMessage({ ...base, stoppedBy: null })).toBeNull();
     expect(flushMessage({ ...base, stoppedBy: "offline" })).toBeNull();
-    expect(flushMessage({ ...base, stoppedBy: "rate_limited" })).toBeNull();
+    expect(flushMessage({ ...base, stoppedBy: "server_error" })).toBeNull();
     expect(flushMessage({ ...base, stoppedBy: "disconnected" })?.reconnect).toBe(true);
-    expect(flushMessage({ ...base, stoppedBy: "quota_exceeded" })?.text).toBe(TEXT.quotaExceeded);
-    expect(flushMessage({ ...base, stoppedBy: "inbox_full" })?.text).toBe(TEXT.inboxFullQueued);
-    expect(flushMessage({ ...base, stoppedBy: "not_updated" })?.text).toBe(TEXT.notUpdatedQueued);
-    expect(flushMessage({ ...base, stoppedBy: "unverified_key" })).toEqual({
-      tone: "error",
-      text: TEXT.unverifiedKey,
-      reconnect: true,
-    });
+    expect(flushMessage({ ...base, stoppedBy: "quota_exceeded" })?.text).toBe(
+      waitText("quota_exceeded"),
+    );
+    expect(flushMessage({ ...base, waiting: 2, stoppedBy: "inbox_full" })?.text).toBe(
+      "Your inbox has 1,000 clips waiting. Open Knowtarium to file them. These clips wait here.",
+    );
+    expect(flushMessage({ ...base, stoppedBy: "not_updated" })?.text).toBe(waitText("not_updated"));
+    expect(flushMessage({ ...base, stoppedBy: "reconnect" })?.reconnect).toBe(true);
+    const at = Date.parse("2026-10-10T14:05:00.000Z");
+    expect(flushMessage({ ...base, stoppedBy: "rate_limited", retryAt: at })?.text).toBe(
+      waitText("rate_limited", { retryAt: at }),
+    );
     expect(flushMessage({ ...base, dropped: 1, stoppedBy: null })?.text).toBe(
       "Knowtarium refused 1 waiting clip, so it was removed",
     );
@@ -196,6 +216,21 @@ describe("the popup's texts", () => {
   });
 
   it("use no em dashes", () => {
-    for (const text of Object.values(TEXT)) expect(text).not.toContain(String.fromCharCode(0x2014));
+    const all = [
+      ...Object.values(TEXT),
+      ...(
+        [
+          "offline",
+          "server_error",
+          "not_updated",
+          "rate_limited",
+          "inbox_full",
+          "quota_exceeded",
+          "unverified_key",
+          "reconnect",
+        ] as const
+      ).map((reason) => waitText(reason, { retryAt: 0 })),
+    ];
+    for (const text of all) expect(text).not.toContain(String.fromCharCode(0x2014));
   });
 });
