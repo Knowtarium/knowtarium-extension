@@ -38,6 +38,8 @@ import {
 /** Shortest and longest wait between two polls. */
 const MIN_POLL_MS = 1_000;
 const MAX_POLL_MS = 10_000;
+/** A connect request's lifetime (the API's CONNECT_REQUEST_TTL_SECONDS): the longest pairing waits. */
+export const CONNECT_REQUEST_TTL_MS = 600_000;
 /** How long an answer may be late after the request's expiry before the page gives up. */
 const EXPIRY_GRACE_MS = 5_000;
 
@@ -173,9 +175,11 @@ export async function pair(
     }
     const requestId = body["requestId"];
     const pollSecret = body["pollSecret"];
-    // a server's time that doesn't parse gets the connect requests' 10 minutes
+    // never longer than the connect requests' 10 minutes, whatever the server says; a time that
+    // doesn't parse gets the 10 minutes too
+    const latest = now() + CONNECT_REQUEST_TTL_MS;
     const parsedExpiry = Date.parse(body["expiresAt"]);
-    const expiresAt = Number.isFinite(parsedExpiry) ? parsedExpiry : now() + 600_000;
+    const expiresAt = Number.isFinite(parsedExpiry) ? Math.min(parsedExpiry, latest) : latest;
     let delay = pollDelay(body["pollIntervalSeconds"]);
 
     const url = connectUrl(deps.appOrigin, requestId, { signPublicKey: keys.publicKey, secret });

@@ -300,6 +300,37 @@ describe("pairing", () => {
     }
   });
 
+  it("waits at most 10 minutes even when the server names a later expiry", async () => {
+    for (const expiresAt of ["2099-01-01T00:00:00.000Z", "not a time"]) {
+      setup = makeSetup(() => "nothing");
+      setup.api.override = (r) =>
+        r.path === "/connect-requests"
+          ? json(201, {
+              requestId: "cr_0123456789abcdefghjkmnpqrs",
+              pollSecret: "poll",
+              expiresAt,
+              pollIntervalSeconds: 1,
+            })
+          : r.path.endsWith("/poll")
+            ? json(200, { status: "pending", pollIntervalSeconds: 1 })
+            : undefined;
+      const start = Date.now();
+      let clock = start;
+      setup.deps = {
+        ...setup.deps,
+        openTab: () => Promise.resolve(),
+        now: () => clock,
+        sleep: () => {
+          clock += 60_000;
+          return Promise.resolve();
+        },
+      };
+      expect(await run()).toEqual({ ok: false, reason: "expired" });
+      // ten minutes and the grace, in one-minute polls
+      expect(clock - start).toBeLessThanOrEqual(11 * 60_000);
+    }
+  });
+
   it("gives up once the request has expired", async () => {
     setup = makeSetup(() => "nothing");
     let clock = Date.now();
