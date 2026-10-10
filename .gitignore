@@ -1,0 +1,17 @@
+# secrets and local config
+.env
+.env.*
+!.env.example
+
+# dependencies and build output
+node_modules/
+dist/
+release/
+coverage/
+test-results/
+playwright-report/
+*.tsbuildinfo
+
+# os and editor
+.DS_Store
+*.log

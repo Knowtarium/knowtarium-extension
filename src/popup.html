@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Save to Knowtarium</title>
+    <link rel="stylesheet" href="./styles/popup.css" />
+    <script type="module" src="./popup/main.ts"></script>
+  </head>
+  <body>
+    <main class="popup" id="popup" aria-busy="true">
+      <header class="brand">
+        <img src="/icons/icon-32.png" alt="" width="20" height="20" />
+        <span class="brand-name">Knowtarium</span>
+        <span class="workspace" id="workspace" hidden></span>
+      </header>
+
+      <p id="loading" class="muted">Loading</p>
+
+      <section id="connect" class="stack" aria-labelledby="connect-title" hidden>
+        <h1 id="connect-title">Save pages to your Knowtarium inbox</h1>
+        <p class="muted">
+          Connect this browser to one workspace. Pages you save are encrypted here, and only your
+          own devices can open them.
+        </p>
+        <div>
+          <button type="button" id="connect-button" class="button button-primary">
+            Connect to Knowtarium
+          </button>
+        </div>
+      </section>
+
+      <form id="clip-form" class="stack" aria-label="Save this page" novalidate hidden>
+        <div class="field">
+          <label for="title">Title</label>
+          <input id="title" name="title" type="text" autocomplete="off" />
+        </div>
+        <div class="field">
+          <span class="label" id="link-label">Link</span>
+          <p id="link" class="link" aria-labelledby="link-label"></p>
+        </div>
+        <div class="field">
+          <label for="note">Note <span class="optional">(optional)</span></label>
+          <textarea id="note" name="note" rows="3" placeholder="Why it matters"></textarea>
+        </div>
+        <div class="field">
+          <label for="category">Category</label>
+          <select id="category" name="category"></select>
+        </div>
+        <div class="field new-category" id="new-category" hidden>
+          <label for="new-category-name">New category</label>
+          <div class="row">
+            <input
+              id="new-category-name"
+              type="text"
+              autocomplete="off"
+              aria-describedby="new-category-error"
+            />
+            <button type="button" id="add-category" class="button button-secondary">Add</button>
+          </div>
+          <p id="new-category-error" class="field-error" hidden></p>
+        </div>
+        <div class="actions">
+          <button type="submit" id="save" class="button button-primary" disabled>Save</button>
+        </div>
+      </form>
+
+      <section id="cant-save" class="stack" hidden>
+        <p class="message message-error">This page can't be saved</p>
+        <p class="muted small">Only web pages (http and https links) can be saved.</p>
+      </section>
+
+      <section id="done" class="stack" hidden>
+        <p id="done-text" class="message message-success"></p>
+        <div>
+          <button
+            type="button"
+            id="close"
+            class="button button-secondary"
+            aria-describedby="done-text"
+          >
+            Close
+          </button>
+        </div>
+      </section>
+
+      <p id="status" class="message message-info" role="status" aria-live="polite" hidden></p>
+      <p id="alert" class="message message-error" role="alert" hidden></p>
+      <div id="reconnect-row" hidden>
+        <button type="button" id="reconnect" class="button button-primary">Connect again</button>
+      </div>
+      <p id="waiting" class="muted small" hidden></p>
+
+      <section
+        id="confirm-disconnect"
+        class="confirm"
+        role="group"
+        aria-labelledby="confirm-text"
+        hidden
+      >
+        <p id="confirm-text"></p>
+        <div class="row">
+          <button type="button" id="confirm-yes" class="button button-danger">Disconnect</button>
+          <button type="button" id="confirm-no" class="button button-secondary">Cancel</button>
+        </div>
+      </section>
+
+      <footer id="footer" class="footer" hidden>
+        <span id="connected-to" class="muted small connected"></span>
+        <button type="button" id="disconnect" class="button-ghost">Disconnect</button>
+      </footer>
+    </main>
+  </body>
+</html>

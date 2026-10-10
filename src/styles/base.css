@@ -1,0 +1,322 @@
+/* The web app's look (apps/web app/tokens.css and app.css): the near-black canvas with tonal panels
+   and 1px hairlines in dark, the Magentix Studio neutrals in light, sans fonts only, the slate focus
+   ring. The extension has no theme switch: it follows the system setting. */
+
+:root {
+  color-scheme: dark;
+
+  --void: #010101;
+  --panel: #0e0e0e;
+  --lifted: #1f1f1f;
+  --hairline: #1f1f1f;
+  --border-strong: #3a3a3a;
+  --ink: #ffffff;
+  --bone: #f5f5f5;
+  --ash: #d9d9d9;
+  --muted: #bababa;
+  --muted-strong: #9f9f9f;
+  --muted-subtle: #8a8a8a;
+  --accent-pink: #ffc4c5;
+  --accent-mint: #a5e6c4;
+  --accent-sky: #99dffe;
+  --cta: #f5f5f5;
+  --on-cta: #0e0e0e;
+  --on-spectrum: #0e0e0e;
+  --disabled-fill: var(--lifted);
+  --disabled-ink: var(--muted-subtle);
+  --spectrum: linear-gradient(100deg, #99dffe 0%, #cd9dfa 22%, #ffc4c5 55%, #ffeaaf 100%);
+  --focus-ring: #9aa3b599 0 0 0 2px inset;
+
+  --radius-control: 6px;
+  --radius-card: 12px;
+  --ease-system: cubic-bezier(0, 0, 0.2, 1);
+  --font-sans: "SF Pro Text", "SF Pro", -apple-system, system-ui, "Segoe UI", Inter, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+
+    --void: #f8f8f9;
+    --panel: #ffffff;
+    --lifted: #ededf0;
+    --hairline: #e4e4e7;
+    --border-strong: #d4d4d8;
+    --ink: #09090b;
+    --bone: #18181b;
+    --ash: #3f3f46;
+    --muted: #52525b;
+    --muted-strong: #5f5f66;
+    --muted-subtle: #6b6b70;
+    --accent-pink: #c53a5a;
+    --accent-mint: #1a8456;
+    --accent-sky: #0b7bb0;
+    --cta: #18181b;
+    --on-cta: #fafafa;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--void);
+}
+
+body {
+  margin: 0;
+  background: var(--void);
+  color: var(--bone);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+h1 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+p {
+  margin: 0;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 13px;
+}
+
+/* the brand line on top of each page */
+.brand {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.brand img {
+  flex: none;
+  border-radius: 5px;
+}
+
+.brand-name {
+  flex: none;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.workspace {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* fields: the web app's field look */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+label,
+.label {
+  color: var(--ash);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.optional {
+  color: var(--muted-subtle);
+  font-weight: 400;
+}
+
+input[type="text"],
+textarea,
+select {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--panel);
+  color: var(--bone);
+  font: inherit;
+  transition: border-color 300ms var(--ease-system);
+}
+
+input[type="text"],
+select {
+  height: 36px;
+}
+
+textarea {
+  min-height: 72px;
+  padding: 8px 12px;
+  resize: vertical;
+}
+
+input[type="text"]::placeholder,
+textarea::placeholder {
+  color: var(--muted-subtle);
+}
+
+input[type="text"]:hover,
+textarea:hover,
+select:hover,
+input[type="text"]:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--muted-subtle);
+}
+
+[aria-invalid="true"] {
+  border-color: var(--accent-pink) !important;
+}
+
+.field-error {
+  color: var(--accent-pink);
+  font-size: 13px;
+}
+
+/* buttons: the web app's recipes */
+.button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--radius-control);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color 500ms var(--ease-system),
+    background-color 500ms var(--ease-system),
+    background-position 1100ms var(--ease-system),
+    border-color 500ms var(--ease-system);
+}
+
+/* the one loud fill on a screen, for its main action */
+.button-primary {
+  background: var(--spectrum);
+  background-size: 200% 100%;
+  background-position: 0 0;
+  color: var(--on-spectrum);
+  font-weight: 600;
+}
+
+.button-primary:hover {
+  background-position: 100% 0;
+}
+
+.button-secondary {
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--bone);
+  font-weight: 500;
+}
+
+.button-secondary:hover {
+  border-color: var(--muted-subtle);
+  background: var(--panel);
+}
+
+.button-danger {
+  background: var(--accent-pink);
+  color: var(--void);
+  font-weight: 500;
+}
+
+.button-ghost {
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: var(--muted-subtle);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 4px;
+  cursor: pointer;
+  transition: color 500ms var(--ease-system);
+}
+
+.button-ghost:hover {
+  color: var(--bone);
+  text-decoration-color: var(--bone);
+}
+
+.button:disabled,
+.button[aria-disabled="true"] {
+  background: var(--disabled-fill);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  color: var(--disabled-ink);
+  cursor: not-allowed;
+}
+
+/* outcome lines: text with a hairline box in the accent of the outcome, never a dot */
+.message {
+  padding: 8px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-control);
+  background: var(--panel);
+  color: var(--bone);
+}
+
+.message-success {
+  border-color: color-mix(in srgb, var(--accent-mint) 45%, transparent);
+}
+
+.message-info {
+  border-color: color-mix(in srgb, var(--accent-sky) 45%, transparent);
+}
+
+.message-error {
+  border-color: color-mix(in srgb, var(--accent-pink) 55%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}

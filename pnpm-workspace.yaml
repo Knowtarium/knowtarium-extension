@@ -1,0 +1,9 @@
+# pnpm waits a day before installing a newly published version; knowtarium is our own SDK, published
+# from Knowtarium/knowtarium-sdk with provenance, so its new versions install at once.
+minimumReleaseAgeExclude:
+  - knowtarium
+# The extension bundles libsodium-wrappers' standard build, never the sumo one: both it and the
+# libsodium build under it are pinned exactly, here and in package.json.
+overrides:
+  libsodium: 0.8.4
+  libsodium-wrappers: 0.8.4

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Connect to Knowtarium</title>
+    <link rel="stylesheet" href="./styles/pair.css" />
+    <script type="module" src="./pair/main.ts"></script>
+  </head>
+  <body>
+    <main class="page" id="page" aria-busy="true">
+      <header class="brand">
+        <img src="/icons/icon-32.png" alt="" width="24" height="24" />
+        <span class="brand-name">Knowtarium</span>
+      </header>
+      <h1>Connect to Knowtarium</h1>
+
+      <p id="starting" class="muted">Starting</p>
+
+      <section id="code-step" class="stack" aria-labelledby="code-label" hidden>
+        <p id="code-label">Check that Knowtarium shows this code</p>
+        <p id="code" class="code"></p>
+        <ol class="steps">
+          <li>Knowtarium opened in a new tab. Sign in if it asks.</li>
+          <li>
+            Continue only if it shows this same code, and tick "This code matches my extension".
+          </li>
+          <li>Pick the workspace, then allow.</li>
+        </ol>
+        <p id="pair-status" class="muted" role="status" aria-live="polite">
+          Waiting for you to allow it in Knowtarium
+        </p>
+        <div>
+          <button type="button" id="reopen" class="button button-secondary">
+            Open Knowtarium again
+          </button>
+        </div>
+      </section>
+
+      <section id="done" class="stack" hidden>
+        <p id="done-text" class="message message-success" role="status"></p>
+        <p id="done-hint" class="muted"></p>
+      </section>
+
+      <section id="failed" class="stack" hidden>
+        <p id="failed-text" class="message message-error" role="alert"></p>
+        <div>
+          <button type="button" id="restart" class="button button-primary">Start again</button>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
