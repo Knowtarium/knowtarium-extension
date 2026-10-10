@@ -13,6 +13,19 @@ import { ENVIRONMENTS } from "../src/environments.ts";
 // needs both running, a test account in KNOWTARIUM_E2E_EMAIL and KNOWTARIUM_E2E_PASSWORD, and an
 // unlocked workspace). Chromium starts with a mock keychain, a basic password store and a fresh
 // profile in KNOWTARIUM_E2E_TMP (or the system's temp folder), deleted afterwards.
+//
+// The full run depends on these parts of the web app (t-129), by accessible name:
+// - /connect/extension, when signed out: fields labelled "Email" and "Password" and a button
+//   named "Sign in" (any letter case); it then comes back to /connect/extension
+// - /connect/extension: the extension's code shown as text (`ABCD-EFGH`), a checkbox labelled
+//   "This code matches my extension" and a button named "Allow" (enabled once it is ticked)
+// - after Allow, the pairing page here shows "Connected to <workspace>"
+// - the web app's home (/), once the clip is filed: the clip's title "A page to keep" shown
+//   as text (the note in the file tree or the inbox)
+//
+// The popup reads the active tab with chrome.tabs.query, which needs the activeTab grant a click
+// on the toolbar button gives; a test can't click it, so the full run opens popup.html in a tab
+// with chrome.tabs.query answering the test page's link and title.
 
 const MODE = process.env["KNOWTARIUM_E2E_EXTENSION"];
 const DIST = resolve(import.meta.dirname, "..", "dist");
@@ -120,19 +133,34 @@ test.describe("smoke", () => {
     await context.route(`${APP}/**`, (route) =>
       route.fulfill({ status: 200, contentType: "text/html", body: "<title>Knowtarium</title>" }),
     );
+    // the popup's Connect button opens the page this way: a one-time nonce in session storage
+    const worker = await serviceWorker();
+    await worker.evaluate(() => chrome.storage.session.set({ pairNonce: "e2e-nonce" }));
     const page = await context.newPage();
     page.on("pageerror", (error) => errors.push(error.message));
     const opened = context.waitForEvent("page");
-    await page.goto(`${EXTENSION}/pair.html`);
+    await page.goto(`${EXTENSION}/pair.html?start=e2e-nonce`);
     await expect(page.locator("#code")).toHaveText(/^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/);
     await expect(page.getByText("Check that Knowtarium shows this code")).toBeVisible();
     const web = await opened;
     await web.waitForURL(`${APP}/connect/extension?**`);
     const url = new URL(web.url());
-    expect(url.pathname).toBe("/connect/extension");
     expect(url.searchParams.get("request")).toBe("cr_0123456789abcdefghjkmnpqrs");
     expect(url.hash).toMatch(/^#signPublicKey=[A-Za-z0-9_-]{43}&secret=[A-Za-z0-9_-]{43}$/);
     expect(errors).toEqual([]);
+  });
+
+  test("a pairing page opened without the popup's nonce starts nothing", async () => {
+    const requests: string[] = [];
+    await context.route(`${API}/**`, (route) => {
+      requests.push(route.request().url());
+      return fakeApi(route);
+    });
+    const page = await context.newPage();
+    await page.goto(`${EXTENSION}/pair.html?start=guessed`);
+    await expect(page.getByRole("button", { name: "Connect to Knowtarium" })).toBeVisible();
+    expect(requests).toEqual([]);
+    expect(context.pages()).toHaveLength(2);
   });
 });
 
@@ -144,13 +172,16 @@ test.describe("full", () => {
     const password = process.env["KNOWTARIUM_E2E_PASSWORD"] ?? "";
     test.skip(email === "" || password === "", "needs KNOWTARIUM_E2E_EMAIL and _PASSWORD");
 
-    // pair: the extension shows the code, the web app shows the same one before Allow
-    const pair = await context.newPage();
-    const opened = context.waitForEvent("page");
-    await pair.goto(`${EXTENSION}/pair.html`);
+    // pair: from the popup's Connect button; the extension shows the code, the web app the same
+    const start = await context.newPage();
+    await start.goto(`${EXTENSION}/popup.html`);
+    const pairOpened = context.waitForEvent("page");
+    await start.getByRole("button", { name: "Connect to Knowtarium" }).click();
+    const pair = await pairOpened;
+    const webOpened = context.waitForEvent("page");
     await expect(pair.locator("#code")).toHaveText(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/);
     const code = (await pair.locator("#code").textContent()) ?? "";
-    const web = await opened;
+    const web = await webOpened;
     await web.waitForURL(`${APP}/**`);
     if (
       await web
@@ -167,22 +198,17 @@ test.describe("full", () => {
     await web.getByRole("button", { name: "Allow" }).click();
     await expect(pair.getByText(/^Connected to /)).toBeVisible({ timeout: 60_000 });
 
-    // save the page the test serves, through the popup (opened as the toolbar button would)
-    const article = await context.newPage();
-    await context.route("https://clip.example/**", (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "text/html",
-        body: "<title>A page to keep</title><p>Hello</p>",
-      }),
-    );
-    await article.goto("https://clip.example/article");
-    await article.bringToFront();
-    const worker = await serviceWorker();
-    const popupOpened = context.waitForEvent("page", (p) => p.url().endsWith("/popup.html"));
-    await worker.evaluate(() => chrome.action.openPopup());
-    const popup = await popupOpened;
-    await expect(popup.getByLabel("Title")).toHaveValue("A page to keep");
+    // save the page the test serves, through the popup, with the tab it would read
+    const article = { url: "https://clip.example/article", title: "A page to keep" };
+    const popup = await context.newPage();
+    await popup.addInitScript((tab) => {
+      Object.defineProperty(chrome.tabs, "query", {
+        configurable: true,
+        value: () => Promise.resolve([{ ...tab, active: true }]),
+      });
+    }, article);
+    await popup.goto(`${EXTENSION}/popup.html`);
+    await expect(popup.getByLabel("Title")).toHaveValue(article.title);
     await popup.getByLabel("Note (optional)").fill("Read later");
     await popup.getByRole("button", { name: "Save" }).click();
     await expect(popup.getByText("Saved to Inbox")).toBeVisible();
