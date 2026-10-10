@@ -315,15 +315,23 @@ export function mountPopup(doc: Document, deps: PopupDeps): PopupHandle {
       el.save.focus();
     }
     await updateWaiting();
-    // send what waits, and read the inbox key once a day
-    const flushed = await deps.clipper.flush();
-    const refreshed = await deps.clipper.refreshInboxKey();
-    if (flushed.stoppedBy === "disconnected" || refreshed === "disconnected") {
-      if (el.done.hidden) showConnect(saveMessage({ kind: "disconnected" }));
-      return;
+    await sendWaiting();
+  }
+
+  /** Sends what waits and reads the inbox key once a day; the form stays usable meanwhile. */
+  async function sendWaiting(): Promise<void> {
+    try {
+      const flushed = await deps.clipper.flush();
+      const refreshed = await deps.clipper.refreshInboxKey();
+      if (flushed.stoppedBy === "disconnected" || refreshed === "disconnected") {
+        if (el.done.hidden) showConnect(saveMessage({ kind: "disconnected" }));
+        return;
+      }
+      if (el.done.hidden && !saving) showMessage(flushMessage(flushed));
+      await updateWaiting();
+    } catch {
+      // the next popup tries again
     }
-    if (el.done.hidden && !saving) showMessage(flushMessage(flushed));
-    await updateWaiting();
   }
 
   const loaded = load()

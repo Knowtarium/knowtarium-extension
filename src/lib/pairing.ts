@@ -155,7 +155,9 @@ export async function pair(
     }
     const requestId = body["requestId"];
     const pollSecret = body["pollSecret"];
-    const expiresAt = Date.parse(body["expiresAt"]);
+    // a server's time that doesn't parse gets the connect requests' 10 minutes
+    const parsedExpiry = Date.parse(body["expiresAt"]);
+    const expiresAt = Number.isFinite(parsedExpiry) ? parsedExpiry : now() + 600_000;
     let delay = pollDelay(body["pollIntervalSeconds"]);
 
     const url = connectUrl(deps.appOrigin, requestId, { signPublicKey: keys.publicKey, secret });
@@ -170,7 +172,7 @@ export async function pair(
     let relayed: string | undefined;
     while (relayed === undefined) {
       if (cancelled()) return fail("cancelled");
-      if (Number.isFinite(expiresAt) && now() > expiresAt + EXPIRY_GRACE_MS) return fail("expired");
+      if (now() > expiresAt + EXPIRY_GRACE_MS) return fail("expired");
       await deps.sleep(delay);
       if (cancelled()) return fail("cancelled");
       const polled = await api.pollConnect(requestId, pollSecret);

@@ -162,6 +162,6 @@ describe("the popup's texts", () => {
   });
 
   it("use no em dashes", () => {
-    for (const text of Object.values(TEXT)) expect(text).not.toContain("—");
+    for (const text of Object.values(TEXT)) expect(text).not.toContain(String.fromCharCode(0x2014));
   });
 });
