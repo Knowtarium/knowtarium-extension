@@ -41,8 +41,20 @@ export interface QueuedClip {
 /** Why the popup should say the connection ended, when it did so without the person. */
 export type Notice = "disconnected";
 
+/** The workspace a connection was for, kept after the server ended it (401). */
+export interface WorkspaceRef {
+  readonly accountId: string;
+  readonly workspaceId: string;
+  readonly workspaceName: string;
+}
+
 export interface StoredState {
   readonly connection?: Connection;
+  /**
+   * After a 401, the workspace the ended connection was for: the queue and the categories stay,
+   * and connecting again to this same account and workspace sends the queue.
+   */
+  readonly previousWorkspace?: WorkspaceRef;
   readonly categories?: readonly string[];
   readonly queue?: readonly QueuedClip[];
   readonly notice?: Notice;
@@ -57,7 +69,13 @@ export interface StateStore {
   remove(keys: readonly StateKey[]): Promise<void>;
 }
 
-export const ALL_KEYS: readonly StateKey[] = ["connection", "categories", "queue", "notice"];
+export const ALL_KEYS: readonly StateKey[] = [
+  "connection",
+  "previousWorkspace",
+  "categories",
+  "queue",
+  "notice",
+];
 
 /** chrome.storage.local. */
 export function chromeStore(area: chrome.storage.StorageArea = chrome.storage.local): StateStore {
@@ -99,6 +117,22 @@ export function memoryStore(initial: StoredState = {}): StateStore & {
     },
     snapshot: (): StoredState => structuredClone(data),
   };
+}
+
+/** The workspace the queue and categories belong to: the connection's, or the one a 401 ended. */
+export async function queueWorkspace(
+  store: StateStore,
+  apiOrigin: string,
+): Promise<WorkspaceRef | undefined> {
+  const connection = await readConnection(store, apiOrigin);
+  if (connection !== undefined) return connection;
+  const { previousWorkspace } = await store.get(["previousWorkspace"]);
+  return previousWorkspace;
+}
+
+/** Whether two references name the same workspace of the same account. */
+export function sameWorkspace(a: WorkspaceRef | undefined, b: WorkspaceRef): boolean {
+  return a?.accountId === b.accountId && a.workspaceId === b.workspaceId;
 }
 
 /** The connection for this build's API, or undefined when there is none (or one for another). */

@@ -17,7 +17,14 @@ import type { ExtensionApi } from "./api";
 import { categoriesAfterPairing } from "./categories";
 import { cleanInboxKey } from "./inbox-key";
 import type { Lock } from "./lock";
-import { type Connection, type QueuedClip, readConnection, type StateStore } from "./storage";
+import {
+  type Connection,
+  type QueuedClip,
+  queueWorkspace,
+  readConnection,
+  sameWorkspace,
+  type StateStore,
+} from "./storage";
 
 // Pairing, as pair.html runs it ("Pairing" in the design). When it starts, and never at install,
 // it makes the extension's Ed25519 key pair and a one-time secret, starts a connect request
@@ -56,7 +63,17 @@ export type PairingFailure =
   | "cancelled";
 
 export type PairingResult =
-  | { readonly ok: true; readonly workspaceName: string; readonly categories: number }
+  | {
+      readonly ok: true;
+      readonly workspaceName: string;
+      readonly categories: number;
+      /** Queued clips kept for this same workspace (signed again as this extension). */
+      readonly kept: number;
+      /** Queued clips for another workspace, dropped. */
+      readonly discarded: number;
+      /** The workspace those were for. */
+      readonly discardedFrom: string | null;
+    }
   | { readonly ok: false; readonly reason: PairingFailure };
 
 export type PairingEvent =
@@ -98,8 +115,9 @@ export function connectUrl(
 
 /**
  * Queued clips were signed by the previous connection's key for its extension ID: a filer would
- * refuse them under the new one. Sign and seal the same payloads (same clip IDs and save times)
- * as this extension, for the newly paired workspace.
+ * refuse them under the new one. When the new connection is for the same account and workspace,
+ * sign and seal the same payloads (same clip IDs and save times) as this extension; clips are
+ * never moved to another workspace (pair() drops them then).
  */
 function rebindQueue(queue: readonly QueuedClip[], connection: Connection): QueuedClip[] {
   const out: QueuedClip[] = [];
@@ -245,25 +263,34 @@ export async function pair(
 
     const previous = await deps.lock(async () => {
       const before = await readConnection(store, deps.apiOrigin);
+      const owner = await queueWorkspace(store, deps.apiOrigin);
+      const same = sameWorkspace(owner, connection);
       const stored = await store.get(["categories", "queue"]);
-      const categories = categoriesAfterPairing(
-        stored.categories ?? [],
-        pairing.categories,
-        before?.workspaceId === connection.workspaceId,
-      );
-      await store.set({
-        connection,
-        categories,
-        queue: rebindQueue(stored.queue ?? [], connection),
-      });
-      await store.remove(["notice"]);
-      return { before, categories: categories.length };
+      const waiting = stored.queue ?? [];
+      const categories = categoriesAfterPairing(stored.categories ?? [], pairing.categories, same);
+      const queue = same ? rebindQueue(waiting, connection) : [];
+      await store.set({ connection, categories, queue });
+      await store.remove(["notice", "previousWorkspace"]);
+      return {
+        before,
+        categories: categories.length,
+        kept: queue.length,
+        discarded: waiting.length - queue.length,
+        discardedFrom: same ? null : (owner?.workspaceName ?? null),
+      };
     });
     // the connection this one replaces stops working (best effort; the web app can revoke it too)
     if (previous.before !== undefined && previous.before.token !== connection.token) {
       await api.revoke(previous.before.token);
     }
-    return { ok: true, workspaceName: pairing.workspaceName, categories: previous.categories };
+    return {
+      ok: true,
+      workspaceName: pairing.workspaceName,
+      categories: previous.categories,
+      kept: previous.kept,
+      discarded: previous.discarded,
+      discardedFrom: previous.discarded > 0 ? previous.discardedFrom : null,
+    };
   } finally {
     secret.fill(0);
     keys.privateKey.fill(0);

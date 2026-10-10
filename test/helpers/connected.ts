@@ -2,7 +2,7 @@ import { createExtensionKeys, toBase64Url } from "knowtarium/clip";
 
 import { createApi } from "../../src/lib/api";
 import { type Clipper, createClipper } from "../../src/lib/clipper";
-import { localLock } from "../../src/lib/lock";
+import { localLock, type Lock } from "../../src/lib/lock";
 import { type Connection, memoryStore, type QueuedClip } from "../../src/lib/storage";
 import { fakeApi, type FakeApi, ORIGIN } from "./fake-api";
 import { makeOwner, type Owner, testId } from "./owner";
@@ -12,6 +12,8 @@ export interface Connected {
   readonly owner: Owner;
   readonly store: ReturnType<typeof memoryStore>;
   readonly clipper: Clipper;
+  /** The lock the clipper takes turns through (pairing shares it). */
+  readonly lock: Lock;
   readonly connection: Connection;
   readonly signPublicKey: Uint8Array;
   /** The clock the clipper reads; tests move it. */
@@ -49,7 +51,9 @@ export function connected(
     categories: options.categories ?? ["Reading"],
     queue: options.queue ?? [],
   });
+  const lock = localLock();
   const state: Connected = {
+    lock,
     api,
     owner,
     store,
@@ -60,7 +64,7 @@ export function connected(
       api: createApi(ORIGIN, api.fetch),
       store,
       apiOrigin: ORIGIN,
-      lock: localLock(),
+      lock,
       now: () => state.clock,
     }),
   };

@@ -1,3 +1,4 @@
+import { consumePairLaunch } from "../lib/pair-launch";
 import { createRuntime } from "../lib/runtime";
 import { mountPairPage } from "./view";
 
@@ -21,4 +22,10 @@ const page = mountPairPage(document, {
   },
 });
 
-void page.run();
+// only the popup's Connect button starts pairing; a restored tab or a reload shows the state
+const given = new URLSearchParams(location.search).get("start");
+history.replaceState(null, "", location.pathname);
+void (async () => {
+  if (await consumePairLaunch(chrome.storage.session, given)) await page.run();
+  else await page.showIdle();
+})();

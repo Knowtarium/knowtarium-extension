@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import type { ApiResult } from "../src/lib/api";
 import { classifyPost } from "../src/lib/clipper";
 import {
+  discardedText,
+  discardWarning,
   flushMessage,
+  keptText,
   pairingFailureText,
   saveMessage,
   TEXT,
@@ -78,7 +81,7 @@ describe("the popup's texts", () => {
     });
     expect(
       saveMessage({ kind: "queued", reason: "not_updated", category: "", waiting: 1 }).text,
-    ).toBe("Knowtarium's server isn't updated yet");
+    ).toBe("Knowtarium's server isn't updated yet. This clip waits here.");
     expect(saveMessage({ kind: "failed", reason: "too_long" }).text).toBe("This clip is too long");
     expect(
       saveMessage({ kind: "queued", reason: "rate_limited", category: "", waiting: 1 }).text,
@@ -86,7 +89,7 @@ describe("the popup's texts", () => {
     expect(saveMessage({ kind: "queued", reason: "inbox_full", category: "", waiting: 1 })).toEqual(
       {
         tone: "error",
-        text: "Your inbox has 1,000 clips waiting. Open Knowtarium to file them.",
+        text: "Your inbox has 1,000 clips waiting. Open Knowtarium to file them. This clip waits here.",
       },
     );
     expect(saveMessage({ kind: "failed", reason: "quota_exceeded" }).text).toBe(
@@ -94,6 +97,33 @@ describe("the popup's texts", () => {
     );
     expect(saveMessage({ kind: "invalid", field: "url", code: "bad_url" }).text).toBe(
       "This page can't be saved",
+    );
+  });
+
+  it("offer Connect again with an inbox key that doesn't verify", () => {
+    expect(
+      saveMessage({ kind: "queued", reason: "unverified_key", category: "", waiting: 1 }),
+    ).toEqual({ tone: "error", text: TEXT.unverifiedKey, reconnect: true });
+  });
+
+  it("warn before connecting elsewhere and say what happened to waiting clips", () => {
+    expect(discardWarning(0, "Research")).toBeNull();
+    expect(discardWarning(1, "Research")).toBe(
+      "1 clip waiting for Research will be discarded if you connect to a different workspace.",
+    );
+    expect(discardWarning(3, "Research")).toBe(
+      "3 clips waiting for Research will be discarded if you connect to a different workspace.",
+    );
+    expect(discardedText(0, "Research")).toBeNull();
+    expect(discardedText(1, "Research")).toBe(
+      "1 clip waiting for Research was discarded, since this is a different workspace.",
+    );
+    expect(discardedText(2, null)).toBe(
+      "2 clips waiting were discarded, since this is a different workspace.",
+    );
+    expect(keptText(0)).toBeNull();
+    expect(keptText(2)).toBe(
+      "2 clips waiting from before will be sent the next time you open the popup.",
     );
   });
 
@@ -129,9 +159,13 @@ describe("the popup's texts", () => {
     expect(flushMessage({ ...base, stoppedBy: "rate_limited" })).toBeNull();
     expect(flushMessage({ ...base, stoppedBy: "disconnected" })?.reconnect).toBe(true);
     expect(flushMessage({ ...base, stoppedBy: "quota_exceeded" })?.text).toBe(TEXT.quotaExceeded);
-    expect(flushMessage({ ...base, stoppedBy: "inbox_full" })?.text).toBe(TEXT.inboxFull);
-    expect(flushMessage({ ...base, stoppedBy: "not_updated" })?.text).toBe(TEXT.notUpdated);
-    expect(flushMessage({ ...base, stoppedBy: "unverified_key" })?.text).toBe(TEXT.unverifiedKey);
+    expect(flushMessage({ ...base, stoppedBy: "inbox_full" })?.text).toBe(TEXT.inboxFullQueued);
+    expect(flushMessage({ ...base, stoppedBy: "not_updated" })?.text).toBe(TEXT.notUpdatedQueued);
+    expect(flushMessage({ ...base, stoppedBy: "unverified_key" })).toEqual({
+      tone: "error",
+      text: TEXT.unverifiedKey,
+      reconnect: true,
+    });
     expect(flushMessage({ ...base, dropped: 1, stoppedBy: null })?.text).toBe(
       "Knowtarium refused 1 waiting clip, so it was removed",
     );

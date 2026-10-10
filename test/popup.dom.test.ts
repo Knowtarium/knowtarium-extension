@@ -1,4 +1,4 @@
-import { ready } from "knowtarium/clip";
+import { fromBase64Url, ready } from "knowtarium/clip";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TEXT } from "../src/lib/messages";
@@ -42,6 +42,7 @@ function mount(
     readPage: () => Promise.resolve(page),
     openPairing: vi.fn(() => Promise.resolve()),
     close: vi.fn(),
+    autoCloseMs: 60_000,
     ...overrides,
   };
   return { deps, handle: mountPopup(document, deps) };
@@ -60,18 +61,21 @@ describe("the popup", () => {
     const { handle } = mount(state);
     await handle.loaded;
     expect(visible("clip-form")).toBe(true);
-    expect(input("title").value).toBe(PAGE.title);
-    expect($("link").textContent).toBe(PAGE.url);
+    expect(textarea("title").value).toBe(PAGE.title);
+    expect(input("link").value).toBe(PAGE.url);
+    expect(input("link").readOnly).toBe(true);
     const options = Array.from(selectEl("category").options).map((o) => o.text);
     expect(options).toEqual(["Inbox", "Inbox/Reading", "Inbox/Work", "+ New category"]);
     expect(selectEl("category").value).toBe("");
     expect(button("save").disabled).toBe(false);
     expect(document.activeElement).toBe($("save"));
-    expect($("workspace").textContent).toBe("Research");
+    // the workspace's name is in the footer only
+    expect($("popup").querySelector("header")?.textContent.trim()).toBe("Knowtarium");
+    expect($("note-hint").textContent).toBe("Ctrl+Enter saves");
     expect($("connected-to").textContent).toBe("Connected to Research");
     expect($("popup").hasAttribute("aria-busy")).toBe(false);
     // every field has a label
-    for (const id of ["title", "note", "category", "new-category-name"]) {
+    for (const id of ["title", "link", "note", "category", "new-category-name"]) {
       expect(document.querySelector(`label[for="${id}"]`)).not.toBeNull();
     }
   });
@@ -80,7 +84,7 @@ describe("the popup", () => {
     const state = connected();
     const { handle } = mount(state);
     await handle.loaded;
-    input("title").value = "Faster builds";
+    textarea("title").value = "Faster builds";
     textarea("note").value = "Read before the CI meeting.";
     const picker = selectEl("category");
     picker.value = "Reading";
@@ -182,7 +186,7 @@ describe("the popup", () => {
     const state = connected();
     const { handle } = mount(state);
     await handle.loaded;
-    input("title").value = "x".repeat(301);
+    textarea("title").value = "x".repeat(301);
     await submit();
     expect($("alert").textContent).toBe(TEXT.titleTooLong);
     expect($("title").getAttribute("aria-invalid")).toBe("true");
@@ -236,10 +240,10 @@ describe("the popup", () => {
     const { handle } = mount(state);
     await handle.loaded;
     $("disconnect").click();
-    expect(visible("confirm-disconnect")).toBe(true);
-    expect($("confirm-text").textContent).toBe(
-      "Disconnect from Research? Clips waiting to be sent are removed.",
-    );
+    await vi.waitFor(() => {
+      expect(visible("confirm-disconnect")).toBe(true);
+    });
+    expect($("confirm-text").textContent).toBe("Disconnect from Research?");
     expect(document.activeElement).toBe($("confirm-no"));
     $("confirm-yes").click();
     await vi.waitFor(() => {
@@ -247,5 +251,99 @@ describe("the popup", () => {
     });
     expect(state.store.snapshot()).toEqual({});
     expect(state.api.revoked.has(state.connection.token)).toBe(true);
+  });
+
+  it("names the waiting clips in the Disconnect confirmation", async () => {
+    const state = connected();
+    state.api.offline = true;
+    await state.clipper.save({ ...PAGE, note: "", category: "" });
+    await state.clipper.save({ ...PAGE, note: "", category: "" });
+    const { handle } = mount(state);
+    await handle.loaded;
+    $("disconnect").click();
+    await vi.waitFor(() => {
+      expect($("confirm-text").textContent).toBe(
+        "Disconnect from Research? The 2 clips waiting to be sent will be removed.",
+      );
+    });
+  });
+
+  it("saves on Enter in the title, which keeps to one line", async () => {
+    const state = connected();
+    const { handle } = mount(state);
+    await handle.loaded;
+    textarea("title").value = "Line one\nline two";
+    textarea("title").dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", cancelable: true }),
+    );
+    await vi.waitFor(() => {
+      expect(visible("done")).toBe(true);
+    });
+    const [blob] = state.api.clips.values();
+    const opened = state.owner.openClip(fromBase64Url(blob ?? ""), state.signPublicKey);
+    expect(opened?.payload["title"]).toBe("Line one line two");
+  });
+
+  it("closes itself shortly after Saved, unless the person moves on", async () => {
+    const quiet = connected();
+    const first = mount(quiet, undefined, { autoCloseMs: 20 });
+    await first.handle.loaded;
+    await submit();
+    await vi.waitFor(() => {
+      expect(first.deps.close).toHaveBeenCalled();
+    });
+
+    loadBody(popupHtml);
+    const busy = connected();
+    const second = mount(busy, undefined, { autoCloseMs: 50 });
+    await second.handle.loaded;
+    await submit();
+    document.dispatchEvent(new Event("pointermove"));
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(second.deps.close).not.toHaveBeenCalled();
+  });
+
+  it("doesn't close itself when the clip only waits", async () => {
+    const state = connected();
+    const { handle, deps } = mount(state, undefined, { autoCloseMs: 10 });
+    await handle.loaded;
+    state.api.offline = true;
+    await submit();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(deps.close).not.toHaveBeenCalled();
+  });
+
+  it("offers Connect again when the inbox key in an answer doesn't verify", async () => {
+    const state = connected();
+    const { handle } = mount(state);
+    await handle.loaded;
+    state.api.override = (r) =>
+      r.path === "/extensions/current/clips"
+        ? new Response(
+            JSON.stringify({
+              error: { code: "stale_inbox_key", message: "", inboxKey: { envelope: {} } },
+            }),
+            { status: 409 },
+          )
+        : undefined;
+    await submit();
+    expect($("done-text").textContent).toBe(TEXT.unverifiedKey);
+    expect(visible("reconnect-row")).toBe(true);
+  });
+
+  it("warns before connecting when clips wait for a workspace", async () => {
+    const state = connected();
+    state.api.offline = true;
+    await state.clipper.save({ ...PAGE, note: "", category: "" });
+    state.api.offline = false;
+    state.api.revoked.add(state.connection.token);
+    const { handle } = mount(state);
+    await handle.loaded;
+    await vi.waitFor(() => {
+      expect($("connect-warning").textContent).toBe(
+        "1 clip waiting for Research will be discarded if you connect to a different workspace.",
+      );
+    });
+    expect(visible("connect-warning")).toBe(true);
   });
 });

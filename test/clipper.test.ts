@@ -204,6 +204,33 @@ describe("saving a clip", () => {
     expect(posts(state)).toHaveLength(2);
   });
 
+  it("doesn't seal again when the stale key named is the one the clip is sealed to", async () => {
+    const state = connected();
+    state.api.override = (r) =>
+      r.path === "/extensions/current/clips"
+        ? apiError(409, "stale_inbox_key", { inboxKey: state.connection.inboxKey })
+        : undefined;
+    expect(await state.clipper.save(form())).toMatchObject({
+      kind: "queued",
+      reason: "server_error",
+    });
+    expect(posts(state)).toHaveLength(1);
+  });
+
+  it("seals a clip queued under an older key to the stored newer one on stale_inbox_key", async () => {
+    const state = connected();
+    state.api.offline = true;
+    await state.clipper.save(form());
+    state.api.offline = false;
+    // another clip already moved the extension to generation 2
+    state.owner.rotate();
+    const newer = state.owner.inboxKey(2);
+    await state.store.set({ connection: { ...state.connection, inboxKey: newer } });
+    state.api.inboxKey = newer;
+    expect(await state.clipper.flush()).toMatchObject({ sent: 1, waiting: 0 });
+    expect(posts(state)).toHaveLength(2);
+  });
+
   it("counts 409 already_exists as saved (an earlier post of this clip got through)", async () => {
     const state = connected();
     state.api.override = (r) =>
@@ -225,14 +252,56 @@ describe("saving a clip", () => {
     }
   });
 
-  it("forgets everything on 401 and leaves a notice", async () => {
+  it("on 401 drops the connection only, keeping the clip, the queue and the categories", async () => {
     for (const code of ["token_revoked", "unauthenticated"]) {
-      const state = connected();
+      const state = connected({ categories: ["Reading", "Mine"] });
       state.api.override = (r) =>
         r.path === "/extensions/current/clips" ? apiError(401, code) : undefined;
       expect(await state.clipper.save(form())).toEqual({ kind: "disconnected" });
-      expect(state.store.snapshot()).toEqual({ notice: "disconnected" });
+      const after = state.store.snapshot();
+      expect(after.connection).toBeUndefined();
+      expect(after.notice).toBe("disconnected");
+      expect(after.categories).toEqual(["Reading", "Mine"]);
+      expect(after.queue).toHaveLength(1);
+      expect(after.previousWorkspace).toEqual({
+        accountId: state.connection.accountId,
+        workspaceId: state.connection.workspaceId,
+        workspaceName: "Research",
+      });
     }
+  });
+
+  it("on 401 keeps a connection that replaced the one whose token got it", async () => {
+    const state = connected();
+    const replacement = { ...state.connection, token: "kte_newer_connection_token_000000000000" };
+    state.api.override = (r) => {
+      if (r.path !== "/extensions/current/clips") return undefined;
+      // a pairing finished while this request was out
+      void state.store.set({ connection: replacement });
+      return apiError(401, "token_revoked");
+    };
+    expect(await state.clipper.save(form())).toEqual({ kind: "disconnected" });
+    expect(state.store.snapshot().connection).toEqual(replacement);
+    expect(state.store.snapshot().notice).toBeUndefined();
+  });
+
+  it("reads the connection inside the lock, so a pairing finishing first is the one used", async () => {
+    const state = connected();
+    let release: () => void = () => undefined;
+    const held = state.lock(() => new Promise<void>((resolve) => (release = resolve)));
+    const saving = state.clipper.save(form());
+    // another workspace's connection lands while the save waits for the lock
+    const other = { ...state.connection, workspaceId: "ws_0000000000000000000000000z" };
+    await state.store.set({ connection: other });
+    release();
+    await held;
+    await saving;
+    const [post] = posts(state);
+    const opened = state.owner.openClip(
+      fromBase64Url((post?.body as { blob: string }).blob),
+      state.signPublicKey,
+    );
+    expect(opened?.payload["workspaceId"]).toBe("ws_0000000000000000000000000z");
   });
 
   it("refuses fields over their limits and pages that aren't http or https", async () => {
@@ -341,11 +410,12 @@ describe("the queue", () => {
     expect(await state.clipper.flush()).toMatchObject({ stoppedBy: "quota_exceeded", waiting: 1 });
   });
 
-  it("forgets everything when the token was revoked", async () => {
+  it("keeps the queue when the token was revoked", async () => {
     const state = await queueOf(2);
     state.api.revoked.add(state.connection.token);
-    expect(await state.clipper.flush()).toMatchObject({ stoppedBy: "disconnected" });
-    expect(state.store.snapshot()).toEqual({ notice: "disconnected" });
+    expect(await state.clipper.flush()).toMatchObject({ stoppedBy: "disconnected", waiting: 2 });
+    expect(state.store.snapshot().connection).toBeUndefined();
+    expect(state.store.snapshot().queue).toHaveLength(2);
   });
 
   it("does nothing for an empty queue", async () => {
@@ -397,14 +467,16 @@ describe("reading the inbox key once a day", () => {
     expect(swapped.store.snapshot().connection?.inboxKey).toEqual(swapped.connection.inboxKey);
   });
 
-  it("forgets everything on 401 and waits on other failures", async () => {
+  it("drops the connection on 401 and waits on other failures", async () => {
     const state = connected();
     state.api.offline = true;
     expect(await state.clipper.refreshInboxKey()).toBe("unavailable");
     state.api.offline = false;
     state.api.revoked.add(state.connection.token);
     expect(await state.clipper.refreshInboxKey()).toBe("disconnected");
-    expect(state.store.snapshot()).toEqual({ notice: "disconnected" });
+    expect(state.store.snapshot().connection).toBeUndefined();
+    expect(state.store.snapshot().notice).toBe("disconnected");
+    expect(state.store.snapshot().categories).toEqual(["Reading"]);
   });
 });
 

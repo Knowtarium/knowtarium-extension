@@ -11,12 +11,31 @@ body {
   padding: 14px 16px 12px;
 }
 
-.link {
-  overflow: hidden;
+/* the title grows with its text, from two rows; Enter saves instead of breaking a line */
+.title-field {
+  min-height: 0;
+  overflow-y: hidden;
+  resize: none;
+}
+
+input.link-field {
+  border-color: transparent;
+  background: transparent;
+  padding: 0;
+  height: auto;
   color: var(--muted);
   font-size: 13px;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+input.link-field:hover,
+input.link-field:focus {
+  border-color: transparent;
+}
+
+.hint {
+  color: var(--muted-subtle);
+  font-size: 12px;
 }
 
 .actions {

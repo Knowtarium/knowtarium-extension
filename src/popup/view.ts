@@ -1,7 +1,14 @@
 import { addCategory, sortCategories } from "../lib/categories";
 import type { Clipper, SaveResult } from "../lib/clipper";
-import { flushMessage, type Message, saveMessage, TEXT, waitingText } from "../lib/messages";
-import { readConnection, type StateStore } from "../lib/storage";
+import {
+  discardWarning,
+  flushMessage,
+  type Message,
+  saveMessage,
+  TEXT,
+  waitingText,
+} from "../lib/messages";
+import { queueWorkspace, readConnection, type StateStore } from "../lib/storage";
 import type { CurrentPage } from "../lib/tab";
 
 // The popup: the current page's title (editable) and link, an optional note, a category (Inbox by
@@ -19,10 +26,17 @@ export interface PopupDeps {
   /** Loads libsodium; Save stays disabled until it has. */
   readonly ready: () => Promise<void>;
   readonly readPage: () => Promise<CurrentPage>;
-  /** Opens pair.html in a tab (and closes the popup). */
+  /** Opens pair.html in a tab with a one-time start nonce (and closes the popup). */
   readonly openPairing: () => Promise<void>;
   readonly close: () => void;
+  /** How long "Saved to ..." stays before the popup closes, unless the person moves on. */
+  readonly autoCloseMs?: number;
+  /** Whether the keyboard has Cmd rather than Ctrl, for the note's hint. */
+  readonly mac?: boolean;
 }
+
+/** The default for `autoCloseMs`. */
+export const AUTO_CLOSE_MS = 1500;
 
 function byId(doc: Document, id: string): HTMLElement {
   const element = doc.getElementById(id);
@@ -38,13 +52,14 @@ export interface PopupHandle {
 export function mountPopup(doc: Document, deps: PopupDeps): PopupHandle {
   const el = {
     popup: byId(doc, "popup"),
-    workspace: byId(doc, "workspace"),
     loading: byId(doc, "loading"),
     connect: byId(doc, "connect"),
+    connectWarning: byId(doc, "connect-warning"),
     connectButton: byId(doc, "connect-button") as HTMLButtonElement,
     form: byId(doc, "clip-form") as HTMLFormElement,
-    title: byId(doc, "title") as HTMLInputElement,
-    link: byId(doc, "link"),
+    title: byId(doc, "title") as HTMLTextAreaElement,
+    link: byId(doc, "link") as HTMLInputElement,
+    noteHint: byId(doc, "note-hint"),
     note: byId(doc, "note") as HTMLTextAreaElement,
     category: byId(doc, "category") as HTMLSelectElement,
     newCategory: byId(doc, "new-category"),
@@ -162,8 +177,24 @@ export function mountPopup(doc: Document, deps: PopupDeps): PopupHandle {
     }
   }
 
+  /** The title grows with its text (two rows at least). */
+  function fitTitle(): void {
+    el.title.style.height = "auto";
+    el.title.style.height = `${String(el.title.scrollHeight + 2)}px`;
+  }
+
+  /** Before connecting: clips waiting for a workspace are dropped if another one is picked. */
+  async function showConnectWarning(): Promise<void> {
+    const owner = await queueWorkspace(deps.store, deps.apiOrigin);
+    const text =
+      owner === undefined
+        ? null
+        : discardWarning(await deps.clipper.waiting(), owner.workspaceName);
+    el.connectWarning.textContent = text ?? "";
+    el.connectWarning.hidden = text === null;
+  }
+
   function showConnect(message: Message | null): void {
-    el.workspace.hidden = true;
     el.footer.hidden = true;
     el.confirm.hidden = true;
     el.waiting.hidden = true;
@@ -172,6 +203,7 @@ export function mountPopup(doc: Document, deps: PopupDeps): PopupHandle {
     el.connectButton.textContent =
       message?.reconnect === true ? "Connect again" : "Connect to Knowtarium";
     el.connectButton.focus();
+    void showConnectWarning().catch(() => undefined);
   }
 
   function setSaving(value: boolean): void {
@@ -192,18 +224,30 @@ export function mountPopup(doc: Document, deps: PopupDeps): PopupHandle {
       clearMessages();
       el.doneText.textContent = message.text;
       el.doneText.className = `message message-${message.tone}`;
-      if (result.kind === "queued" && result.reason === "inbox_full") {
-        el.doneText.setAttribute("role", "alert");
-      } else {
-        el.doneText.setAttribute("role", "status");
-      }
+      el.reconnectRow.hidden = message.reconnect !== true;
       await updateWaiting();
+      // the Close button is described by the outcome, so focusing it reads the outcome out
       el.close.focus();
+      if (result.kind === "saved") closeSoon();
       return;
     }
     showMessage(message);
     if (result.kind === "invalid") markInvalid(result.field);
     else el.save.focus();
+  }
+
+  /** Closes the popup after "Saved to ...", unless the person points, clicks or types first. */
+  function closeSoon(): void {
+    const events = ["pointermove", "pointerdown", "keydown", "focusin"] as const;
+    const cancel = () => {
+      clearTimeout(timer);
+      for (const name of events) doc.removeEventListener(name, cancel, true);
+    };
+    const timer = setTimeout(() => {
+      cancel();
+      deps.close();
+    }, deps.autoCloseMs ?? AUTO_CLOSE_MS);
+    for (const name of events) doc.addEventListener(name, cancel, true);
   }
 
   async function save(): Promise<void> {
@@ -214,7 +258,8 @@ export function mountPopup(doc: Document, deps: PopupDeps): PopupHandle {
     try {
       const result = await deps.clipper.save({
         url: page.url,
-        title: el.title.value,
+        // a pasted title may hold line breaks: they become spaces
+        title: el.title.value.replace(/[\r\n]+/g, " "),
         note: el.note.value,
         category: selected,
       });
@@ -236,6 +281,14 @@ export function mountPopup(doc: Document, deps: PopupDeps): PopupHandle {
     event.preventDefault();
     void save();
   });
+  el.title.addEventListener("keydown", (event) => {
+    // a title is one line: Enter saves
+    if (event.key === "Enter" && !event.isComposing) {
+      event.preventDefault();
+      void save();
+    }
+  });
+  el.title.addEventListener("input", fitTitle);
   el.note.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
@@ -265,9 +318,16 @@ export function mountPopup(doc: Document, deps: PopupDeps): PopupHandle {
   });
   el.addCategory.addEventListener("click", () => void addTypedCategory());
   el.disconnect.addEventListener("click", () => {
-    el.confirmText.textContent = `Disconnect from ${workspaceName}? Clips waiting to be sent are removed.`;
-    el.confirm.hidden = false;
-    el.confirmNo.focus();
+    void (async () => {
+      const count = await deps.clipper.waiting();
+      const clips = count === 1 ? "The clip" : `The ${String(count)} clips`;
+      el.confirmText.textContent =
+        count === 0
+          ? `Disconnect from ${workspaceName}?`
+          : `Disconnect from ${workspaceName}? ${clips} waiting to be sent will be removed.`;
+      el.confirm.hidden = false;
+      el.confirmNo.focus();
+    })();
   });
   el.confirmNo.addEventListener("click", () => {
     el.confirm.hidden = true;
@@ -295,8 +355,7 @@ export function mountPopup(doc: Document, deps: PopupDeps): PopupHandle {
       return;
     }
     workspaceName = connection.workspaceName;
-    el.workspace.textContent = workspaceName;
-    el.workspace.hidden = false;
+    el.noteHint.textContent = deps.mac === true ? "Cmd+Enter saves" : "Ctrl+Enter saves";
     el.connectedTo.textContent = `Connected to ${workspaceName}`;
     el.footer.hidden = false;
     const [stored, current] = await Promise.all([deps.store.get(["categories"]), deps.readPage()]);
@@ -306,10 +365,11 @@ export function mountPopup(doc: Document, deps: PopupDeps): PopupHandle {
       showOnly(el.cantSave);
     } else {
       el.title.value = page.title;
-      el.link.textContent = page.url;
+      el.link.value = page.url;
       el.link.title = page.url;
       renderCategories();
       showOnly(el.form);
+      fitTitle();
       await deps.ready();
       el.save.disabled = false;
       el.save.focus();

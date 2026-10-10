@@ -13,7 +13,6 @@
       <header class="brand">
         <img src="/icons/icon-32.png" alt="" width="20" height="20" />
         <span class="brand-name">Knowtarium</span>
-        <span class="workspace" id="workspace" hidden></span>
       </header>
 
       <p id="loading" class="muted">Loading</p>
@@ -24,6 +23,7 @@
           Connect this browser to one workspace. Pages you save are encrypted here, and only your
           own devices can open them.
         </p>
+        <p id="connect-warning" class="message message-info" hidden></p>
         <div>
           <button type="button" id="connect-button" class="button button-primary">
             Connect to Knowtarium
@@ -34,15 +34,22 @@
       <form id="clip-form" class="stack" aria-label="Save this page" novalidate hidden>
         <div class="field">
           <label for="title">Title</label>
-          <input id="title" name="title" type="text" autocomplete="off" />
+          <textarea id="title" name="title" rows="2" class="title-field"></textarea>
         </div>
         <div class="field">
-          <span class="label" id="link-label">Link</span>
-          <p id="link" class="link" aria-labelledby="link-label"></p>
+          <label for="link">Link</label>
+          <input id="link" name="link" type="text" class="link-field" readonly />
         </div>
         <div class="field">
           <label for="note">Note <span class="optional">(optional)</span></label>
-          <textarea id="note" name="note" rows="3" placeholder="Why it matters"></textarea>
+          <textarea
+            id="note"
+            name="note"
+            rows="3"
+            placeholder="Why it matters"
+            aria-describedby="note-hint"
+          ></textarea>
+          <p id="note-hint" class="hint">Ctrl+Enter saves</p>
         </div>
         <div class="field">
           <label for="category">Category</label>

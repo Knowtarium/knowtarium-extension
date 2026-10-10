@@ -10,7 +10,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApi } from "../src/lib/api";
 import { localLock } from "../src/lib/lock";
 import { pair, type PairingDeps, type PairingEvent } from "../src/lib/pairing";
-import { memoryStore } from "../src/lib/storage";
+import { memoryStore, type QueuedClip, type StoredState } from "../src/lib/storage";
 import { apiError, fakeApi, type FakeApi, json, ORIGIN } from "./helpers/fake-api";
 import {
   makeOwner,
@@ -99,7 +99,14 @@ describe("pairing", () => {
   it("makes its keys when pairing starts, shows the code at once and stores the connection", async () => {
     expect(setup.store.snapshot()).toEqual({});
     const result = await run();
-    expect(result).toEqual({ ok: true, workspaceName: "Research", categories: 2 });
+    expect(result).toEqual({
+      ok: true,
+      workspaceName: "Research",
+      categories: 2,
+      kept: 0,
+      discarded: 0,
+      discardedFrom: null,
+    });
 
     const start = setup.api.requests[0];
     expect(start?.method).toBe("POST");
@@ -340,7 +347,7 @@ describe("pairing", () => {
       owner: setup.owner,
       store: setup.store,
     });
-    expect((await run(second)).ok).toBe(true);
+    expect(await run(second)).toMatchObject({ ok: true, kept: 1, discarded: 0 });
     const after = setup.store.snapshot();
     expect(after.connection?.token).not.toBe(oldToken);
     expect(setup.api.revoked.has(oldToken)).toBe(true);
@@ -356,4 +363,75 @@ describe("pairing", () => {
     expect(opened?.signed).toBe(true);
     expect(opened?.payload["clipId"]).toBe("clip_0000000000000000000000000f");
   });
+
+  it("drops queued clips when the new connection is for another workspace", async () => {
+    expect((await run()).ok).toBe(true);
+    await setup.store.set({ queue: [queuedFor(setup.store.snapshot())] });
+    // another owner: another account and workspace
+    const other = makeSetup(() => ({ categories: ["Theirs"] }), {
+      api: setup.api,
+      store: setup.store,
+    });
+    expect(await run(other)).toMatchObject({
+      ok: true,
+      kept: 0,
+      discarded: 1,
+      discardedFrom: "Research",
+    });
+    const after = setup.store.snapshot();
+    expect(after.queue).toEqual([]);
+    expect(after.categories).toEqual(["Theirs"]);
+    expect(after.connection?.workspaceId).toBe(other.owner.workspaceId);
+  });
+
+  it("after a 401, connecting again to the same workspace keeps the queue and categories", async () => {
+    expect((await run()).ok).toBe(true);
+    const paired = setup.store.snapshot();
+    const { accountId, workspaceId, workspaceName } = paired.connection ?? {
+      accountId: "",
+      workspaceId: "",
+      workspaceName: "",
+    };
+    // what a 401 leaves: no connection, the queue, the categories and the workspace they're for
+    await setup.store.remove(["connection"]);
+    await setup.store.set({
+      notice: "disconnected",
+      previousWorkspace: { accountId, workspaceId, workspaceName },
+      categories: ["Reading", "Mine"],
+      queue: [queuedFor(paired)],
+    });
+    const again = makeSetup(() => ({ categories: ["Reading"] }), {
+      api: setup.api,
+      owner: setup.owner,
+      store: setup.store,
+    });
+    expect(await run(again)).toMatchObject({ ok: true, kept: 1, discarded: 0 });
+    const after = setup.store.snapshot();
+    expect(after.categories).toEqual(["Reading", "Mine"]);
+    expect(after.queue?.[0]?.payload.extensionId).toBe(after.connection?.extensionId);
+    expect(after.notice).toBeUndefined();
+    expect(after.previousWorkspace).toBeUndefined();
+  });
 });
+
+/** One queued clip for the stored connection's workspace. */
+function queuedFor(state: StoredState): QueuedClip {
+  const clipId = "clip_0000000000000000000000000g";
+  return {
+    clipId,
+    payload: {
+      v: 1,
+      clipId,
+      workspaceId: state.connection?.workspaceId ?? "",
+      extensionId: state.connection?.extensionId ?? "",
+      url: "https://example.com/",
+      title: "Example",
+      note: "",
+      category: "",
+      savedAt: "2026-10-10T09:41:07.512Z",
+    },
+    blob: "AQ",
+    generation: 1,
+    queuedAt: "2026-10-10T09:41:07.512Z",
+  };
+}

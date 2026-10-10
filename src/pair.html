@@ -18,6 +18,17 @@
 
       <p id="starting" class="muted">Starting</p>
 
+      <section id="idle" class="stack" hidden>
+        <p id="idle-text" class="muted"></p>
+        <div>
+          <button type="button" id="start" class="button button-primary">
+            Connect to Knowtarium
+          </button>
+        </div>
+      </section>
+
+      <p id="discard-warning" class="message message-info" hidden></p>
+
       <section id="code-step" class="stack" aria-labelledby="code-label" hidden>
         <p id="code-label">Check that Knowtarium shows this code</p>
         <p id="code" class="code"></p>
@@ -40,6 +51,7 @@
 
       <section id="done" class="stack" hidden>
         <p id="done-text" class="message message-success" role="status"></p>
+        <p id="done-queue" class="message message-info" hidden></p>
         <p id="done-hint" class="muted"></p>
       </section>
 

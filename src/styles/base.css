@@ -126,9 +126,11 @@ p {
   min-width: 0;
 }
 
+/* the icon is a black tile: a hairline keeps its shape on the near-black canvas */
 .brand img {
   flex: none;
   border-radius: 5px;
+  box-shadow: 0 0 0 1px var(--border-strong);
 }
 
 .brand-name {

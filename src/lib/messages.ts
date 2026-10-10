@@ -19,6 +19,10 @@ export const TEXT = {
   tooLong: "This clip is too long",
   rateLimited: "Too many saves, it will be sent later",
   inboxFull: "Your inbox has 1,000 clips waiting. Open Knowtarium to file them.",
+  /** The design's texts for a clip that stays queued, with where the clip is. */
+  notUpdatedQueued: "Knowtarium's server isn't updated yet. This clip waits here.",
+  inboxFullQueued:
+    "Your inbox has 1,000 clips waiting. Open Knowtarium to file them. This clip waits here.",
   quotaExceeded: "Your Knowtarium storage is full",
   cantSave: "This page can't be saved",
   offline: "Knowtarium can't be reached right now, it will be sent later",
@@ -46,11 +50,11 @@ export function waitText(reason: WaitReason): string {
     case "server_error":
       return TEXT.serverError;
     case "not_updated":
-      return TEXT.notUpdated;
+      return TEXT.notUpdatedQueued;
     case "rate_limited":
       return TEXT.rateLimited;
     case "inbox_full":
-      return TEXT.inboxFull;
+      return TEXT.inboxFullQueued;
     case "unverified_key":
       return TEXT.unverifiedKey;
   }
@@ -75,8 +79,10 @@ export function saveMessage(result: SaveResult): Message {
     case "queued":
       // inbox_full is no promise to send it later; the others are
       return {
-        tone: result.reason === "inbox_full" ? "error" : "info",
+        tone:
+          result.reason === "inbox_full" || result.reason === "unverified_key" ? "error" : "info",
         text: waitText(result.reason),
+        ...(result.reason === "unverified_key" ? { reconnect: true } : {}),
       };
     case "failed":
       return { tone: "error", text: failText(result.reason) };
@@ -101,9 +107,11 @@ export function flushMessage(result: FlushResult): Message | null {
     return { tone: "error", text: TEXT.disconnected, reconnect: true };
   }
   if (result.stoppedBy === "quota_exceeded") return { tone: "error", text: TEXT.quotaExceeded };
-  if (result.stoppedBy === "inbox_full") return { tone: "error", text: TEXT.inboxFull };
-  if (result.stoppedBy === "not_updated") return { tone: "info", text: TEXT.notUpdated };
-  if (result.stoppedBy === "unverified_key") return { tone: "error", text: TEXT.unverifiedKey };
+  if (result.stoppedBy === "inbox_full") return { tone: "error", text: TEXT.inboxFullQueued };
+  if (result.stoppedBy === "not_updated") return { tone: "info", text: TEXT.notUpdatedQueued };
+  if (result.stoppedBy === "unverified_key") {
+    return { tone: "error", text: TEXT.unverifiedKey, reconnect: true };
+  }
   if (result.dropped > 0) {
     const text =
       result.dropped === 1
@@ -112,6 +120,28 @@ export function flushMessage(result: FlushResult): Message | null {
     return { tone: "error", text };
   }
   return null;
+}
+
+const clips = (count: number) => (count === 1 ? "1 clip" : `${String(count)} clips`);
+
+/** Before pairing, when clips wait: what connecting to another workspace does to them. */
+export function discardWarning(count: number, workspaceName: string): string | null {
+  if (count <= 0) return null;
+  return `${clips(count)} waiting for ${workspaceName} will be discarded if you connect to a different workspace.`;
+}
+
+/** After pairing with another workspace: what happened to the clips that waited. */
+export function discardedText(count: number, workspaceName: string | null): string | null {
+  if (count <= 0) return null;
+  const verb = count === 1 ? "was" : "were";
+  const from = workspaceName === null ? "" : ` for ${workspaceName}`;
+  return `${clips(count)} waiting${from} ${verb} discarded, since this is a different workspace.`;
+}
+
+/** After pairing again with the same workspace, when clips wait. */
+export function keptText(count: number): string | null {
+  if (count <= 0) return null;
+  return `${clips(count)} waiting from before will be sent the next time you open the popup.`;
 }
 
 /** "1 clip waiting to be sent", or null when none waits. */

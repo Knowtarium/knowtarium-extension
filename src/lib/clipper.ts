@@ -129,14 +129,37 @@ export interface Clipper {
   waiting(): Promise<number>;
   /** Reads the inbox key when the last read is a day old (the popup does it when it opens). */
   refreshInboxKey(): Promise<InboxKeyRefresh>;
-  /** Revokes the token (best effort) and clears everything local. Whether the API confirmed it. */
+  /**
+   * Revokes the token (best effort) and clears everything local, the queue included. Whether the
+   * API confirmed it.
+   */
   disconnect(): Promise<{ readonly revoked: boolean }>;
 }
 
-/** Clears everything local, and leaves a notice for the popup when the server ended it. */
-export async function forgetEverything(store: StateStore, notice?: "disconnected"): Promise<void> {
+/** Clears everything local (Disconnect). */
+export async function forgetEverything(store: StateStore): Promise<void> {
   await store.remove(ALL_KEYS);
-  if (notice !== undefined) await store.set({ notice });
+}
+
+/**
+ * The server ended the connection (401): removes it, when it is still the one whose token got
+ * the 401, and leaves a notice for the popup. The queue and the categories stay, with the
+ * workspace they belong to, so connecting again to the same workspace sends the queue. Call it
+ * inside the queue's lock.
+ */
+export async function endConnection(
+  store: StateStore,
+  apiOrigin: string,
+  token: string,
+): Promise<void> {
+  const connection = await readConnection(store, apiOrigin);
+  if (connection?.token !== token) return;
+  const { accountId, workspaceId, workspaceName } = connection;
+  await store.remove(["connection"]);
+  await store.set({
+    notice: "disconnected",
+    previousWorkspace: { accountId, workspaceId, workspaceName },
+  });
 }
 
 /** Which field made `normalizeClip` refuse the form, by trying it without the others. */
@@ -205,6 +228,10 @@ export function createClipper(deps: ClipperDeps): Clipper {
     if (check === "refused") {
       return { answer: { kind: "wait", reason: "unverified_key" }, connection };
     }
+    // the key the server names is the one this clip is sealed to: sealing again changes nothing
+    if (check === "same" && item.generation === connection.inboxKey.envelope.generation) {
+      return { answer: { kind: "wait", reason: "server_error" }, connection };
+    }
     let current = connection;
     if (check === "newer") {
       current = {
@@ -223,63 +250,67 @@ export function createClipper(deps: ClipperDeps): Clipper {
     return { answer: classifyPost(again), connection: current };
   }
 
-  return {
-    async save(form) {
-      const connection = await readConnection(store, apiOrigin);
-      if (connection === undefined) return { kind: "disconnected" };
-      const input: ClipInput = {
-        clipId: createClipId(),
-        workspaceId: connection.workspaceId,
-        extensionId: connection.extensionId,
-        url: form.url,
-        title: form.title,
-        note: form.note,
-        category: form.category,
-        savedAt: new Date(now()).toISOString(),
+  async function saveLocked(form: ClipForm): Promise<SaveResult> {
+    const connection = await readConnection(store, apiOrigin);
+    if (connection === undefined) return { kind: "disconnected" };
+    const input: ClipInput = {
+      clipId: createClipId(),
+      workspaceId: connection.workspaceId,
+      extensionId: connection.extensionId,
+      url: form.url,
+      title: form.title,
+      note: form.note,
+      category: form.category,
+      savedAt: new Date(now()).toISOString(),
+    };
+    let item: QueuedClip;
+    try {
+      const payload = normalizeClip(input);
+      item = {
+        clipId: payload.clipId,
+        payload,
+        ...seal(connection, payload),
+        queuedAt: new Date(now()).toISOString(),
       };
-      let item: QueuedClip;
-      try {
-        const payload = normalizeClip(input);
-        item = {
-          clipId: payload.clipId,
-          payload,
-          ...seal(connection, payload),
-          queuedAt: new Date(now()).toISOString(),
+    } catch (error) {
+      if (!isClipError(error)) throw error;
+      const code = error.code === "too_long" || error.code === "bad_url" ? error.code : "invalid";
+      return { kind: "invalid", field: invalidField(input, error.code), code };
+    }
+    const category = item.payload.category;
+    const queue = await readQueue();
+    if (queue.length >= QUEUE_LIMIT) return { kind: "queue_full" };
+    // written before it is sent, so a popup closed mid-request loses nothing
+    await writeQueue([...queue, item]);
+    const { answer } = await send(connection, item);
+    switch (answer.kind) {
+      case "sent":
+        await removeItem(item.clipId);
+        return { kind: "saved", category, duplicate: answer.duplicate };
+      case "wait":
+        return {
+          kind: "queued",
+          reason: answer.reason,
+          category,
+          waiting: (await readQueue()).length,
         };
-      } catch (error) {
-        if (!isClipError(error)) throw error;
-        const code = error.code === "too_long" || error.code === "bad_url" ? error.code : "invalid";
-        return { kind: "invalid", field: invalidField(input, error.code), code };
-      }
-      const category = item.payload.category;
-      return lock(async () => {
-        const queue = await readQueue();
-        if (queue.length >= QUEUE_LIMIT) return { kind: "queue_full" } as const;
-        // written before it is sent, so a popup closed mid-request loses nothing
-        await writeQueue([...queue, item]);
-        const { answer } = await send(connection, item);
-        switch (answer.kind) {
-          case "sent":
-            await removeItem(item.clipId);
-            return { kind: "saved", category, duplicate: answer.duplicate } as const;
-          case "wait":
-            return {
-              kind: "queued",
-              reason: answer.reason,
-              category,
-              waiting: (await readQueue()).length,
-            } as const;
-          case "full":
-            await removeItem(item.clipId);
-            return { kind: "failed", reason: "quota_exceeded" } as const;
-          case "refused":
-            await removeItem(item.clipId);
-            return { kind: "failed", reason: answer.reason } as const;
-          case "disconnected":
-            await forgetEverything(store, "disconnected");
-            return { kind: "disconnected" } as const;
-        }
-      });
+      case "full":
+        await removeItem(item.clipId);
+        return { kind: "failed", reason: "quota_exceeded" };
+      case "refused":
+        await removeItem(item.clipId);
+        return { kind: "failed", reason: answer.reason };
+      case "disconnected":
+        // the clip stays queued for the same workspace's next connection
+        await endConnection(store, apiOrigin, connection.token);
+        return { kind: "disconnected" };
+    }
+  }
+
+  return {
+    save(form) {
+      // all of it under the lock, so a pairing finishing meanwhile can't mix two workspaces
+      return lock(() => saveLocked(form));
     },
 
     flush() {
@@ -302,8 +333,13 @@ export function createClipper(deps: ClipperDeps): Clipper {
             continue;
           }
           if (answer.kind === "disconnected") {
-            await forgetEverything(store, "disconnected");
-            return { sent, dropped, waiting: 0, stoppedBy: "disconnected" };
+            await endConnection(store, apiOrigin, connection.token);
+            return {
+              sent,
+              dropped,
+              waiting: (await readQueue()).length,
+              stoppedBy: "disconnected",
+            };
           }
           queue = await readQueue();
           return {
@@ -327,7 +363,7 @@ export function createClipper(deps: ClipperDeps): Clipper {
       if (now() - connection.inboxKeyCheckedAt < INBOX_KEY_CHECK_MS) return "skipped";
       const result = await api.getInboxKey(connection.token);
       if (result.kind === "error" && result.status === 401) {
-        await lock(() => forgetEverything(store, "disconnected"));
+        await lock(() => endConnection(store, apiOrigin, connection.token));
         return "disconnected";
       }
       if (result.kind !== "ok") return "unavailable";
