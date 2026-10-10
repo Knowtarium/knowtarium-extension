@@ -342,7 +342,7 @@ export function mountPopup(doc: Document, deps: PopupDeps): PopupHandle {
         tone: "info",
         text: revoked
           ? "Disconnected. This browser can't save to Knowtarium anymore."
-          : "Disconnected here, but Knowtarium couldn't be reached. Remove this extension in your workspace's settings too.",
+          : "Disconnected here, but Knowtarium couldn't be reached. Revoke this extension in Knowtarium under Settings > Agents too.",
       });
     })();
   });

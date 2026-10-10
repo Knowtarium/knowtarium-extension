@@ -17,11 +17,13 @@ import { ENVIRONMENTS } from "../src/environments.ts";
 // The full run depends on these parts of the web app (t-129), by accessible name:
 // - /connect/extension, when signed out: fields labelled "Email" and "Password" and a button
 //   named "Sign in" (any letter case); it then comes back to /connect/extension
-// - /connect/extension: the extension's code shown as text (`ABCD-EFGH`), a checkbox labelled
-//   "This code matches my extension" and a button named "Allow" (enabled once it is ticked)
-// - after Allow, the pairing page here shows "Connected to <workspace>"
-// - the web app's home (/), once the clip is filed: the clip's title "A page to keep" shown
-//   as text (the note in the file tree or the inbox)
+// - /connect/extension: the warning "Only continue if you just clicked Connect in your Knowtarium
+//   extension", the code as plain text labelled "Confirmation code" (`ABCD-EFGH`), a checkbox
+//   labelled "This code matches my extension", a field labelled "Name this extension", and the
+//   buttons "Allow" (enabled once the box is ticked) and "Deny"
+// - after Allow, the web app says "Connected. You can close this tab", and the pairing page
+//   here shows "Connected to <workspace>"
+// - the web app's home (/), once the clip is filed: the clip's title "A page to keep" visible
 //
 // The popup reads the active tab with chrome.tabs.query, which needs the activeTab grant a click
 // on the toolbar button gives; a test can't click it, so the full run opens popup.html in a tab
@@ -193,12 +195,22 @@ test.describe("full", () => {
       await web.getByLabel("Password").fill(password);
       await web.getByRole("button", { name: /sign in/i }).click();
     }
-    await expect(web.getByText(code)).toBeVisible({ timeout: 60_000 });
+    await expect(
+      web.getByText("Only continue if you just clicked Connect in your Knowtarium extension"),
+    ).toBeVisible({ timeout: 60_000 });
+    await expect(web.getByLabel("Confirmation code")).toHaveText(code);
+    await expect(web.getByRole("button", { name: "Deny" })).toBeVisible();
+    const allow = web.getByRole("button", { name: "Allow" });
+    await expect(allow).toBeDisabled();
+    await web.getByLabel("Name this extension").fill("Chromium in the test");
     await web.getByLabel("This code matches my extension").check();
-    await web.getByRole("button", { name: "Allow" }).click();
+    await allow.click();
+    await expect(web.getByText("Connected. You can close this tab")).toBeVisible({
+      timeout: 60_000,
+    });
     await expect(pair.getByText(/^Connected to /)).toBeVisible({ timeout: 60_000 });
 
-    // save the page the test serves, through the popup, with the tab it would read
+    // save a clip of the test page through the popup, with the tab it would read
     const article = { url: "https://clip.example/article", title: "A page to keep" };
     const popup = await context.newPage();
     await popup.addInitScript((tab) => {

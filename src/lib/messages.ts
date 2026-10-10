@@ -170,7 +170,7 @@ export function pairingFailureText(reason: PairingFailure): string {
     case "bad_payload":
     case "wrong_key":
     case "bad_signature":
-      return "Knowtarium's answer didn't check out, so this extension didn't connect. Start again, and remove this extension in your workspace's settings in Knowtarium if it's listed there.";
+      return "Knowtarium's answer didn't check out, so this extension didn't connect. Start again, and revoke this extension in Knowtarium under Settings > Agents if it's listed there.";
     case "cancelled":
       return "Connecting was stopped.";
   }
