@@ -1,0 +1,132 @@
+name: Release
+
+# On a v* tag: builds the extension from the tag, packs the Chrome Web Store and Edge Add-ons
+# zips, and publishes them on the tag's GitHub Release with SHA256SUMS, size.json (the packed
+# size, also in the notes) and signed build provenance. The build job only reads; the release
+# job, the only writer, checks out and runs nothing from the repository.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SDK_REF: ${{ vars.KNOWTARIUM_SDK_REF || 'clipper' }}
+
+jobs:
+  build:
+    name: Build and pack the tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: extension
+          persist-credentials: false
+
+      - name: Check the tag's version
+        id: version
+        working-directory: extension
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(jq -r .version package.json)
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::the tag $TAG doesn't match package.json's version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Knowtarium/knowtarium-sdk
+          ref: ${{ env.SDK_REF }}
+          path: app-clipper
+          persist-credentials: false
+
+      # Reads the pnpm version from "packageManager" in package.json.
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          package_json_file: extension/package.json
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: extension/.nvmrc
+
+      - name: Build the SDK
+        working-directory: app-clipper
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Check and pack
+        working-directory: extension
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm check
+          pnpm package
+          (cd release && sha256sum -c SHA256SUMS)
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: extension/release/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # create the release and upload its files, and sign their build provenance
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: release-files
+
+      # a signed record of which workflow run made each zip:
+      # gh attestation verify <zip> --repo Knowtarium/knowtarium-extension
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release-files/*.zip
+
+      - name: Publish the files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd release-files
+          sha256sum -c SHA256SUMS
+          packed=$(jq -r .packedBytes size.json)
+          kib=$(awk "BEGIN { printf \"%.1f\", $packed / 1024 }")
+          notes="Knowtarium Web Clipper $VERSION.
+
+          - \`knowtarium-extension-chrome-$VERSION.zip\` for the Chrome Web Store
+          - \`knowtarium-extension-edge-$VERSION.zip\` for Edge Add-ons (the same files)
+
+          Packed size: $kib KiB ($packed bytes). Permissions: activeTab and storage only.
+
+          Check a download with \`sha256sum -c SHA256SUMS\` (\`shasum -a 256 -c SHA256SUMS\` on macOS) and its build provenance with \`gh attestation verify <zip> --repo $GITHUB_REPOSITORY\`."
+          flags=()
+          if [[ "$VERSION" == *-* ]]; then flags+=(--prerelease); fi
+          # never replaces a release or a file that already exists
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Knowtarium Web Clipper $VERSION" --notes "$notes" "${flags[@]}" \
+            "knowtarium-extension-chrome-$VERSION.zip" \
+            "knowtarium-extension-edge-$VERSION.zip" \
+            SHA256SUMS size.json

@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # cancel superseded PR runs, but let every push finish
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Until the release that pins the published knowtarium package, the extension links the SDK
+# from ../app-clipper (package.json: "knowtarium": "link:../app-clipper"). CI checks it out
+# there from Knowtarium/knowtarium-sdk at KNOWTARIUM_SDK_REF (a repository variable, default
+# the clipper branch) and builds it first.
+env:
+  SDK_REF: ${{ vars.KNOWTARIUM_SDK_REF || 'clipper' }}
+
+jobs:
+  check:
+    name: Check, build and pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: extension
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Knowtarium/knowtarium-sdk
+          ref: ${{ env.SDK_REF }}
+          path: app-clipper
+          persist-credentials: false
+
+      # Reads the pnpm version from "packageManager" in package.json.
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          package_json_file: extension/package.json
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: extension/.nvmrc
+          cache: pnpm
+          cache-dependency-path: |
+            extension/pnpm-lock.yaml
+            app-clipper/pnpm-lock.yaml
+
+      - name: Build the SDK
+        working-directory: app-clipper
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Install
+        working-directory: extension
+        run: pnpm install --frozen-lockfile
+
+      # lint, format check, typecheck and tests
+      - name: Check
+        working-directory: extension
+        run: pnpm check
+
+      # the production build, its checks, the two zips and the recorded size
+      - name: Pack
+        working-directory: extension
+        run: |
+          pnpm package
+          cat release/size.json
+
+      - name: Development and staging builds
+        working-directory: extension
+        run: |
+          pnpm build:dev
+          pnpm build:staging
