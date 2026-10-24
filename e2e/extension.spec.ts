@@ -14,7 +14,7 @@ import { ENVIRONMENTS } from "../src/environments.ts";
 // unlocked workspace). Chromium starts with a mock keychain, a basic password store and a fresh
 // profile in KNOWTARIUM_E2E_TMP (or the system's temp folder), deleted afterwards.
 //
-// The full run depends on these parts of the web app (t-129), by accessible name:
+// The full run depends on these parts of the web app (t-129, t-143), by accessible name:
 // - /connect/extension, when signed out: fields labelled "Email" and "Password" and a button
 //   named "Sign in" (any letter case); it then comes back to /connect/extension
 // - /connect/extension: the warning "Only continue if you just clicked Connect in your Knowtarium
@@ -23,7 +23,9 @@ import { ENVIRONMENTS } from "../src/environments.ts";
 //   buttons "Allow" (enabled once the box is ticked) and "Deny"
 // - after Allow, the web app says "Connected. You can close this tab", and the pairing page
 //   here shows "Connected to <workspace>"
-// - the web app's home (/), once the clip is filed: the clip's title "A page to keep" visible
+// - the web app's sidebar (from /, once unlocked): a link named "Inbox, " and its count ("Inbox, empty",
+//   "Inbox, 1 note"); the Inbox page it opens shows the clip, once filed, as a link named "A page to
+//   keep" in main. Unsorted clips aren't listed on the home page or in the folders.
 //
 // The popup reads the active tab with chrome.tabs.query, which needs the activeTab grant a click
 // on the toolbar button gives; a test can't click it, so the full run opens popup.html in a tab
@@ -229,13 +231,16 @@ test.describe("full", () => {
     await web.goto(`${APP}/`);
     // keys never survive a full load: the web app asks for the password again
     const unlock = web.getByRole("button", { name: "Unlock" });
-    await expect(unlock.or(web.getByText("A page to keep").first())).toBeVisible({
-      timeout: 60_000,
-    });
+    const inbox = web.getByRole("link", { name: /^Inbox, / });
+    await expect(unlock.or(inbox)).toBeVisible({ timeout: 60_000 });
     if (await unlock.isVisible()) {
       await web.getByLabel("Password", { exact: true }).fill(password);
       await unlock.click();
     }
-    await expect(web.getByText("A page to keep").first()).toBeVisible({ timeout: 60_000 });
+    // unsorted clips wait on the Inbox page, which the sidebar's Inbox link opens
+    await inbox.click({ timeout: 60_000 });
+    await expect(
+      web.getByRole("main").getByRole("link", { name: "A page to keep", exact: true }),
+    ).toBeVisible({ timeout: 60_000 });
   });
 });
